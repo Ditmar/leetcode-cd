@@ -5,7 +5,7 @@ name: Deploy to Railway
 # También puede dispararse manualmente con elección de ambiente.
 on:
   push:
-    branches: [main]
+    branches: [master]
     paths:
       - "apps/**/dev.json"
       - "apps/**/qa.json"

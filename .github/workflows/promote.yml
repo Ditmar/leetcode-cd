@@ -152,7 +152,7 @@ jobs:
 > Merging este PR desplegará automáticamente la imagen en \`$TO\`.
 
 ${{ inputs.notes && format('**Notas:** {0}', inputs.notes) || '' }}" \
-            --base main \
+            --base master \
             --head "$BRANCH" \
             --assignee "${{ github.actor }}"
         env:
