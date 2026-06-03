@@ -1,15 +1,15 @@
 {
-  "app": "my-app",
+  "app": "leetcode-spa",
   "environment": "prod",
-  "image": "dockerhub-user/my-app:1.0.2",
-  "railwayProject": "my-app-project",
-  "railwayProjectId": "RAILWAY_PROJECT_ID_HERE",
+  "image": "ditmar/leetcode-spa:0.2.0",
+  "railwayProject": "leetcode",
+  "railwayProjectId": "824cf489-b077-4bb9-ab4c-af7e72674f5f",
   "railwayEnvironment": "production",
-  "railwayEnvironmentId": "RAILWAY_ENV_ID_PROD_HERE",
-  "railwayService": "my-app",
-  "railwayServiceId": "RAILWAY_SERVICE_ID_PROD_HERE",
+  "railwayEnvironmentId": "406599c5-da49-4a91-b3f0-5a235ada2082",
+  "railwayService": "leetcode-spa",
+  "railwayServiceId": "19f2ad7f-a70e-4aec-b688-8f88b0272c4c",
   "deployedAt": "2026-05-20T12:00:00Z",
-  "deployedBy": "jane.doe",
+  "deployedBy": "Ditmar",
   "commitSha": "jkl3456",
   "notes": "Stable release — approved by product team on 2026-05-20"
 }
