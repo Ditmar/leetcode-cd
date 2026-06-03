@@ -122,10 +122,10 @@ log_step "Actualizando imagen del servicio en Railway"
 
 UPDATE_QUERY=$(cat <<EOF
 {
-  "query": "mutation UpdateServiceImage(\$serviceId: String!, \$projectId: String!, \$image: String!) { serviceUpdate(id: \$serviceId, input: { source: { image: \$image } }) { id updatedAt } }",
+  "query": "mutation ServiceInstanceUpdate(\$serviceId: String!, \$environmentId: String!, \$image: String!) { serviceInstanceUpdate(serviceId: \$serviceId, environmentId: \$environmentId, input: { source: { image: \$image } }) }",
   "variables": {
     "serviceId": "$RAILWAY_SERVICE_ID",
-    "projectId": "$RAILWAY_PROJECT_ID",
+    "environmentId": "$RAILWAY_ENVIRONMENT_ID",
     "image": "$IMAGE"
   }
 }
@@ -133,9 +133,9 @@ EOF
 )
 
 UPDATE_RESPONSE=$(railway_graphql "$UPDATE_QUERY")
-UPDATED_SERVICE_ID=$(echo "$UPDATE_RESPONSE" | jq -r '.data.serviceUpdate.id // empty')
+UPDATE_SUCCESS=$(echo "$UPDATE_RESPONSE" | jq -r '.data.serviceInstanceUpdate // empty')
 
-if [[ -z "$UPDATED_SERVICE_ID" ]]; then
+if [[ "$UPDATE_SUCCESS" != "true" ]]; then
   log_error "No se pudo actualizar la imagen del servicio."
   log_error "Respuesta: $UPDATE_RESPONSE"
   exit 1
