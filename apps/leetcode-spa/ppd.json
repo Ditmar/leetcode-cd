@@ -1,0 +1,15 @@
+{
+  "app": "my-app",
+  "environment": "ppd",
+  "image": "dockerhub-user/my-app:1.0.3",
+  "railwayProject": "my-app-project",
+  "railwayProjectId": "RAILWAY_PROJECT_ID_HERE",
+  "railwayEnvironment": "ppd",
+  "railwayEnvironmentId": "RAILWAY_ENV_ID_PPD_HERE",
+  "railwayService": "my-app",
+  "railwayServiceId": "RAILWAY_SERVICE_ID_PPD_HERE",
+  "deployedAt": "2026-05-30T10:00:00Z",
+  "deployedBy": "jane.doe",
+  "commitSha": "ghi9012",
+  "notes": "Pre-production smoke test — awaiting final approval for prod promotion"
+}

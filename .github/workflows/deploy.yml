@@ -1,0 +1,161 @@
+name: Deploy to Railway
+
+# ── Triggers ──────────────────────────────────────────────────────────────────
+# Se dispara cuando se hace merge a main de un PR que modifica un archivo de ambiente.
+# También puede dispararse manualmente con elección de ambiente.
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/**/dev.json"
+      - "apps/**/qa.json"
+      - "apps/**/ppd.json"
+      - "apps/**/prod.json"
+
+  workflow_dispatch:
+    inputs:
+      app:
+        description: "Nombre de la app (ej: my-app)"
+        required: true
+        type: string
+      environment:
+        description: "Ambiente a desplegar"
+        required: true
+        type: choice
+        options: [dev, qa, ppd, prod]
+
+# ── Permisos mínimos necesarios ───────────────────────────────────────────────
+permissions:
+  contents: write   # para commitear la actualización de deployedAt en el JSON
+  pull-requests: read
+
+jobs:
+  # ── Detectar qué archivos cambiaron ────────────────────────────────────────
+  detect-changes:
+    name: Detect changed environments
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.build-matrix.outputs.matrix }}
+      has-changes: ${{ steps.build-matrix.outputs.has-changes }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Build deployment matrix
+        id: build-matrix
+        run: |
+          # Manual dispatch: construir matrix desde inputs
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            APP="${{ inputs.app }}"
+            ENV="${{ inputs.environment }}"
+            MATRIX=$(jq -n \
+              --arg app "$APP" \
+              --arg env "$ENV" \
+              --arg file "apps/$APP/$ENV.json" \
+              '[{"app": $app, "environment": $env, "config_file": $file}]')
+            echo "matrix=$(echo $MATRIX | jq -c .)" >> $GITHUB_OUTPUT
+            echo "has-changes=true" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          # Push a main: detectar archivos JSON que cambiaron
+          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD -- 'apps/**/*.json' 2>/dev/null || \
+                          git diff --name-only HEAD^ HEAD -- 'apps/**/*.json')
+
+          if [[ -z "$CHANGED_FILES" ]]; then
+            echo "has-changes=false" >> $GITHUB_OUTPUT
+            echo "matrix=[]" >> $GITHUB_OUTPUT
+            exit 0
+          fi
+
+          MATRIX="[]"
+          while IFS= read -r file; do
+            # Parsear app y ambiente del path: apps/<app>/<env>.json
+            APP=$(echo "$file" | cut -d'/' -f2)
+            ENV=$(echo "$file" | cut -d'/' -f3 | sed 's/\.json$//')
+            ENTRY=$(jq -n \
+              --arg app "$APP" \
+              --arg env "$ENV" \
+              --arg file "$file" \
+              '{"app": $app, "environment": $env, "config_file": $file}')
+            MATRIX=$(echo "$MATRIX" | jq --argjson entry "$ENTRY" '. + [$entry]')
+          done <<< "$CHANGED_FILES"
+
+          echo "matrix=$(echo $MATRIX | jq -c .)" >> $GITHUB_OUTPUT
+          echo "has-changes=true" >> $GITHUB_OUTPUT
+
+  # ── Deploy por cada ambiente que cambió ────────────────────────────────────
+  deploy:
+    name: Deploy ${{ matrix.app }} → ${{ matrix.environment }}
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has-changes == 'true'
+    runs-on: ubuntu-latest
+
+    # Usar environment de GitHub para requerir aprobación en prod/ppd
+    environment: ${{ matrix.environment }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+
+    env:
+      RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (jq, curl)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq jq curl
+
+      - name: Show deployment plan
+        run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  DEPLOYMENT PLAN"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  App:         ${{ matrix.app }}"
+          echo "  Environment: ${{ matrix.environment }}"
+          echo "  Config:      ${{ matrix.config_file }}"
+          echo "  Triggered by: ${{ github.actor }}"
+          echo "  Commit:      ${{ github.sha }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          cat "${{ matrix.config_file }}"
+
+      - name: Validate Docker image exists
+        run: |
+          chmod +x scripts/validate-image.sh
+          IMAGE=$(jq -r '.image' "${{ matrix.config_file }}")
+          RAILWAY_ENVIRONMENT="${{ matrix.environment }}" \
+            ./scripts/validate-image.sh "$IMAGE"
+
+      - name: Deploy to Railway
+        run: |
+          chmod +x scripts/deploy-railway.sh
+          ./scripts/deploy-railway.sh "${{ matrix.config_file }}"
+
+      - name: Update metadata in config file
+        run: |
+          # deploy-railway.sh ya actualiza el JSON, ahora commiteamos el cambio
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "${{ matrix.config_file }}"
+          git diff --staged --quiet || \
+            git commit -m "chore(cd): update deploy metadata for ${{ matrix.app }}/${{ matrix.environment }} [skip ci]"
+          git push
+
+      - name: Notify deployment success
+        if: success()
+        run: |
+          IMAGE=$(jq -r '.image' "${{ matrix.config_file }}")
+          echo "✅ Deployed $IMAGE to ${{ matrix.environment }} successfully"
+          # Aquí podrías agregar notificación a Slack/Teams:
+          # curl -X POST ${{ secrets.SLACK_WEBHOOK }} -d '{"text": "..."}'
+
+      - name: Notify deployment failure
+        if: failure()
+        run: |
+          echo "❌ Deployment FAILED for ${{ matrix.app }} in ${{ matrix.environment }}"
+          # Aquí agregar alerta a Slack/PagerDuty

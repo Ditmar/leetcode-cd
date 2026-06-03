@@ -1,0 +1,15 @@
+{
+  "app": "my-app",
+  "environment": "qa",
+  "image": "dockerhub-user/my-app:1.0.3-rc.1",
+  "railwayProject": "my-app-project",
+  "railwayProjectId": "RAILWAY_PROJECT_ID_HERE",
+  "railwayEnvironment": "qa",
+  "railwayEnvironmentId": "RAILWAY_ENV_ID_QA_HERE",
+  "railwayService": "my-app",
+  "railwayServiceId": "RAILWAY_SERVICE_ID_QA_HERE",
+  "deployedAt": "2026-06-01T15:00:00Z",
+  "deployedBy": "john.doe",
+  "commitSha": "def5678",
+  "notes": "Release candidate — pending QA sign-off before promoting to ppd"
+}

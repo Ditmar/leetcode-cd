@@ -1,0 +1,15 @@
+{
+  "app": "my-app",
+  "environment": "prod",
+  "image": "dockerhub-user/my-app:1.0.2",
+  "railwayProject": "my-app-project",
+  "railwayProjectId": "RAILWAY_PROJECT_ID_HERE",
+  "railwayEnvironment": "production",
+  "railwayEnvironmentId": "RAILWAY_ENV_ID_PROD_HERE",
+  "railwayService": "my-app",
+  "railwayServiceId": "RAILWAY_SERVICE_ID_PROD_HERE",
+  "deployedAt": "2026-05-20T12:00:00Z",
+  "deployedBy": "jane.doe",
+  "commitSha": "jkl3456",
+  "notes": "Stable release — approved by product team on 2026-05-20"
+}

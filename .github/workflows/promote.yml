@@ -1,0 +1,159 @@
+name: Promote Between Environments
+
+# Disparo manual para promover la imagen de un ambiente al siguiente.
+# La cadena es: dev → qa → ppd → prod
+# Este workflow SOLO actualiza el JSON y abre un PR.
+# El despliegue real ocurre cuando el PR se aprueba y se mergea (via deploy.yml).
+on:
+  workflow_dispatch:
+    inputs:
+      app:
+        description: "App a promover (ej: my-app)"
+        required: true
+        type: string
+      from_environment:
+        description: "Ambiente origen"
+        required: true
+        type: choice
+        options: [dev, qa, ppd]
+      to_environment:
+        description: "Ambiente destino"
+        required: true
+        type: choice
+        options: [qa, ppd, prod]
+      notes:
+        description: "Notas opcionales para el PR (ej: fix para bug #123)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  promote:
+    name: Promote ${{ inputs.app }} (${{ inputs.from_environment }} → ${{ inputs.to_environment }})
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install jq
+        run: sudo apt-get install -y -qq jq
+
+      - name: Validate promotion direction
+        run: |
+          declare -A VALID_CHAIN=( ["dev"]="qa" ["qa"]="ppd" ["ppd"]="prod" )
+          FROM="${{ inputs.from_environment }}"
+          TO="${{ inputs.to_environment }}"
+          EXPECTED="${VALID_CHAIN[$FROM]}"
+
+          if [[ "$TO" != "$EXPECTED" ]]; then
+            echo "❌ Promoción inválida: $FROM → $TO"
+            echo "La cadena correcta es: $FROM → $EXPECTED"
+            echo "No se permiten saltos de ambiente."
+            exit 1
+          fi
+          echo "✅ Dirección de promoción válida: $FROM → $TO"
+
+      - name: Read source image
+        id: source
+        run: |
+          FROM_FILE="apps/${{ inputs.app }}/${{ inputs.from_environment }}.json"
+          if [[ ! -f "$FROM_FILE" ]]; then
+            echo "❌ Config de origen no encontrado: $FROM_FILE"
+            exit 1
+          fi
+
+          IMAGE=$(jq -r '.image' "$FROM_FILE")
+          TAG="${IMAGE##*:}"
+          COMMIT_SHA=$(jq -r '.commitSha' "$FROM_FILE")
+          DEPLOYED_AT=$(jq -r '.deployedAt' "$FROM_FILE")
+
+          echo "image=$IMAGE"           >> $GITHUB_OUTPUT
+          echo "tag=$TAG"               >> $GITHUB_OUTPUT
+          echo "commit_sha=$COMMIT_SHA" >> $GITHUB_OUTPUT
+          echo "deployed_at=$DEPLOYED_AT" >> $GITHUB_OUTPUT
+
+          echo "📦 Imagen a promover: $IMAGE"
+
+      - name: Guard against latest tag in prod/ppd
+        run: |
+          TAG="${{ steps.source.outputs.tag }}"
+          TO="${{ inputs.to_environment }}"
+
+          if [[ "$TAG" == "latest" && ("$TO" == "ppd" || "$TO" == "prod") ]]; then
+            echo "❌ Tag 'latest' no permitido en $TO"
+            exit 1
+          fi
+
+      - name: Check for existing promotion PR
+        id: check-pr
+        run: |
+          BRANCH="promote/${{ inputs.app }}/${{ inputs.from_environment }}-to-${{ inputs.to_environment }}"
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Update target environment JSON
+        run: |
+          TO_FILE="apps/${{ inputs.app }}/${{ inputs.to_environment }}.json"
+          IMAGE="${{ steps.source.outputs.image }}"
+          NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+          TEMP=$(mktemp)
+          jq --arg img "$IMAGE" \
+             --arg ts "$NOW" \
+             --arg by "${{ github.actor }}" \
+             --arg sha "${{ steps.source.outputs.commit_sha }}" \
+             --arg note "Promovido desde ${{ inputs.from_environment }} por ${{ github.actor }}. ${{ inputs.notes }}" \
+             '.image = $img | .deployedAt = $ts | .deployedBy = $by | .commitSha = $sha | .notes = $note' \
+             "$TO_FILE" > "$TEMP"
+          mv "$TEMP" "$TO_FILE"
+
+          echo "✅ Actualizado: $TO_FILE"
+          cat "$TO_FILE"
+
+      - name: Create promotion branch and PR
+        run: |
+          BRANCH="${{ steps.check-pr.outputs.branch }}"
+          IMAGE="${{ steps.source.outputs.image }}"
+          APP="${{ inputs.app }}"
+          FROM="${{ inputs.from_environment }}"
+          TO="${{ inputs.to_environment }}"
+
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git checkout -b "$BRANCH"
+          git add "apps/$APP/$TO.json"
+          git commit -m "promote($APP): $FROM → $TO — $IMAGE"
+          git push origin "$BRANCH" --force
+
+          # Crear PR usando GitHub CLI
+          gh pr create \
+            --title "promote($APP): $FROM → $TO — $IMAGE" \
+            --body "## Promoción de ambiente
+
+**App:** \`$APP\`
+**De:** \`$FROM\` → **A:** \`$TO\`
+**Imagen:** \`$IMAGE\`
+**Commit:** \`${{ steps.source.outputs.commit_sha }}\`
+**Promovido por:** @${{ github.actor }}
+
+---
+
+### Checklist antes de aprobar
+- [ ] Smoke tests pasaron en \`$FROM\`
+- [ ] QA / stakeholder dio sign-off
+- [ ] Imagen validada en Docker Hub
+- [ ] Sin incidentes activos en \`$FROM\`
+
+> Merging este PR desplegará automáticamente la imagen en \`$TO\`.
+
+${{ inputs.notes && format('**Notas:** {0}', inputs.notes) || '' }}" \
+            --base main \
+            --head "$BRANCH" \
+            --assignee "${{ github.actor }}"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

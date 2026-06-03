@@ -1,0 +1,16 @@
+# Secretos y variables reales — NUNCA commitear
+*.env
+.env.*
+!*.example.env
+
+# Archivos temporales de scripts
+*.tmp
+*.bak
+
+# Herramientas locales
+.railway/
+
+# OS
+.DS_Store
+Thumbs.db
+.claude
