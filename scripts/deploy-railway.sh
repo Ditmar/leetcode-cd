@@ -143,24 +143,10 @@ fi
 
 log_ok "Imagen actualizada → $IMAGE"
 
-# ── Paso 2: Crear deployment (trigger redeploy) ──────────────────────────────
-log_step "Disparando redeploy en Railway"
+# Railway auto-dispara el deploy cuando serviceInstanceUpdate recibe una nueva imagen.
+# No es necesario un paso adicional de trigger.
 
-DEPLOY_QUERY=$(cat <<EOF
-{
-  "query": "mutation TriggerDeploy(\$serviceId: String!, \$environmentId: String!) { serviceInstanceDeploy(serviceId: \$serviceId, environmentId: \$environmentId) }",
-  "variables": {
-    "serviceId": "$RAILWAY_SERVICE_ID",
-    "environmentId": "$RAILWAY_ENVIRONMENT_ID"
-  }
-}
-EOF
-)
-
-DEPLOY_RESPONSE=$(railway_graphql "$DEPLOY_QUERY")
-log_info "Respuesta deploy: $(echo "$DEPLOY_RESPONSE" | jq -c '.data // .errors')"
-
-# ── Paso 3: Registrar metadatos del deploy ────────────────────────────────────
+# ── Paso 2: Registrar metadatos del deploy ────────────────────────────────────
 log_step "Registrando metadatos del despliegue"
 
 DEPLOYED_AT=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
