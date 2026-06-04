@@ -1,7 +1,7 @@
 {
   "app": "leetcode-spa",
   "environment": "prod",
-  "image": "ditmar/leetcode-spa:0.4.0",
+  "image": "ditmar/leetcode-spa:0.5.0",
   "railwayProject": "leetcode",
   "railwayProjectId": "824cf489-b077-4bb9-ab4c-af7e72674f5f",
   "railwayEnvironment": "production",
