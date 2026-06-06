@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # promote.sh — Promueve la imagen de un ambiente al siguiente en la cadena.
-# Cadena de promoción: dev → qa → ppd → prod
+# Cadena de promoción: ppd → prod
 #
 # Uso: ./promote.sh <app> <from-env> <to-env>
-# Ejemplo: ./promote.sh my-app qa ppd
+# Ejemplo: ./promote.sh my-app ppd prod
 #
 # El script:
 #   1. Lee la imagen del ambiente origen (from-env.json)
@@ -26,13 +26,13 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # ── Cadena de promoción válida ───────────────────────────────────────────────
 declare -A PROMOTION_CHAIN
-PROMOTION_CHAIN=( ["dev"]="qa" ["qa"]="ppd" ["ppd"]="prod" )
+PROMOTION_CHAIN=( ["ppd"]="prod" )
 
 # ── Validar argumentos ───────────────────────────────────────────────────────
 if [[ $# -lt 3 ]]; then
   log_error "Uso: $0 <app> <from-env> <to-env>"
-  log_error "Ejemplo: $0 my-app qa ppd"
-  log_error "Cadena válida: dev → qa → ppd → prod"
+  log_error "Ejemplo: $0 my-app ppd prod"
+  log_error "Cadena válida: ppd → prod"
   exit 1
 fi
 
@@ -44,7 +44,7 @@ TO_ENV="$3"
 EXPECTED_TARGET="${PROMOTION_CHAIN[$FROM_ENV]:-}"
 if [[ -z "$EXPECTED_TARGET" ]]; then
   log_error "'$FROM_ENV' no es un ambiente origen válido."
-  log_error "Ambientes origen válidos: dev, qa, ppd"
+  log_error "Ambiente origen válido: ppd"
   exit 1
 fi
 
