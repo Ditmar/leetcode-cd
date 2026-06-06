@@ -7,8 +7,6 @@ on:
   push:
     branches: [master]
     paths:
-      - "apps/**/dev.json"
-      - "apps/**/qa.json"
       - "apps/**/ppd.json"
       - "apps/**/prod.json"
 
@@ -22,7 +20,7 @@ on:
         description: "Ambiente a desplegar"
         required: true
         type: choice
-        options: [dev, qa, ppd, prod]
+        options: [ppd, prod]
 
 # ── Permisos mínimos necesarios ───────────────────────────────────────────────
 permissions:

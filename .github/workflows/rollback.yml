@@ -15,7 +15,7 @@ on:
         description: "Ambiente objetivo"
         required: true
         type: choice
-        options: [dev, qa, ppd, prod]
+        options: [ppd, prod]
       strategy:
         description: "Estrategia de rollback"
         required: true

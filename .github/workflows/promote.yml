@@ -1,7 +1,7 @@
 name: Promote Between Environments
 
 # Disparo manual para promover la imagen de un ambiente al siguiente.
-# La cadena es: dev → qa → ppd → prod
+# La cadena es: ppd → prod
 # Este workflow SOLO actualiza el JSON y abre un PR.
 # El despliegue real ocurre cuando el PR se aprueba y se mergea (via deploy.yml).
 on:
@@ -15,12 +15,12 @@ on:
         description: "Ambiente origen"
         required: true
         type: choice
-        options: [dev, qa, ppd]
+        options: [ppd]
       to_environment:
         description: "Ambiente destino"
         required: true
         type: choice
-        options: [qa, ppd, prod]
+        options: [prod]
       notes:
         description: "Notas opcionales para el PR (ej: fix para bug #123)"
         required: false
@@ -45,7 +45,7 @@ jobs:
 
       - name: Validate promotion direction
         run: |
-          declare -A VALID_CHAIN=( ["dev"]="qa" ["qa"]="ppd" ["ppd"]="prod" )
+          declare -A VALID_CHAIN=( ["ppd"]="prod" )
           FROM="${{ inputs.from_environment }}"
           TO="${{ inputs.to_environment }}"
           EXPECTED="${VALID_CHAIN[$FROM]}"
