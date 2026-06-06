@@ -131,27 +131,14 @@ jobs:
           git push origin "$BRANCH" --force
 
           # Crear PR usando GitHub CLI
+          NOTES_LINE="${{ inputs.notes && format('**Notas:** {0}', inputs.notes) || '' }}"
+          PR_BODY=$(printf '## Promoción de ambiente\n\n**App:** `%s`\n**De:** `%s` → **A:** `%s`\n**Imagen:** `%s`\n**Commit:** `%s`\n**Promovido por:** @%s\n\n---\n\n### Checklist antes de aprobar\n- [ ] Smoke tests pasaron en `%s`\n- [ ] QA / stakeholder dio sign-off\n- [ ] Imagen validada en Docker Hub\n- [ ] Sin incidentes activos en `%s`\n\n> Merging este PR desplegará automáticamente la imagen en `%s`.\n\n%s' \
+            "$APP" "$FROM" "$TO" "$IMAGE" \
+            "${{ steps.source.outputs.commit_sha }}" "${{ github.actor }}" \
+            "$FROM" "$FROM" "$TO" "$NOTES_LINE")
           gh pr create \
             --title "promote($APP): $FROM → $TO — $IMAGE" \
-            --body "## Promoción de ambiente
-
-**App:** \`$APP\`
-**De:** \`$FROM\` → **A:** \`$TO\`
-**Imagen:** \`$IMAGE\`
-**Commit:** \`${{ steps.source.outputs.commit_sha }}\`
-**Promovido por:** @${{ github.actor }}
-
----
-
-### Checklist antes de aprobar
-- [ ] Smoke tests pasaron en \`$FROM\`
-- [ ] QA / stakeholder dio sign-off
-- [ ] Imagen validada en Docker Hub
-- [ ] Sin incidentes activos en \`$FROM\`
-
-> Merging este PR desplegará automáticamente la imagen en \`$TO\`.
-
-${{ inputs.notes && format('**Notas:** {0}', inputs.notes) || '' }}" \
+            --body "$PR_BODY" \
             --base master \
             --head "$BRANCH" \
             --assignee "${{ github.actor }}"
