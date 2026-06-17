@@ -8,8 +8,8 @@
   "railwayEnvironmentId": "4b6ca1af-8042-4d06-b469-ea34f3a8cc56",
   "railwayService": "leetcode-spa",
   "railwayServiceId": "19f2ad7f-a70e-4aec-b688-8f88b0272c4c",
-  "deployedAt": "2026-06-17T13:09:18Z",
+  "deployedAt": "2026-06-17T13:40:39Z",
   "deployedBy": "Ditmar",
-  "commitSha": "00b2e91",
+  "commitSha": "a560f8d",
   "notes": "Pre-production smoke test — awaiting final approval for prod promotion"
 }
