@@ -1,0 +1,15 @@
+{
+  "app": "api-leetcode",
+  "environment": "ppd",
+  "image": "ditmar/api-leetcode:0.1.0",
+  "railwayProject": "leetcode",
+  "railwayProjectId": "824cf489-b077-4bb9-ab4c-af7e72674f5f",
+  "railwayEnvironment": "ppd",
+  "railwayEnvironmentId": "4b6ca1af-8042-4d06-b469-ea34f3a8cc56",
+  "railwayService": "api-leetcode",
+  "railwayServiceId": "19f2ad7f-a70e-4aec-b688-8f88b0272c4c",
+  "deployedAt": "2026-06-30T22:30:00Z",
+  "deployedBy": "PCilverio",
+  "commitSha": "pending",
+  "notes": "Initial pre-production slot setup for API service deployment"
+}
