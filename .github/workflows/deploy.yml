@@ -83,15 +83,23 @@ jobs:
           echo "matrix=$(echo $MATRIX | jq -c .)" >> $GITHUB_OUTPUT
           echo "has-changes=true" >> $GITHUB_OUTPUT
 
-  # ── Deploy a ppd (siempre corre primero) ────────────────────────────────────
-  deploy-ppd:
-    name: Deploy ${{ matrix.app }} → ppd
+  # ── Deploy por cada ambiente que cambió ────────────────────────────────────
+  deploy:
+    name: Deploy ${{ matrix.app }} → ${{ matrix.environment }}
     needs: detect-changes
-    if: |
-      needs.detect-changes.outputs.has-changes == 'true' &&
-      matrix.environment == 'ppd'
+    if: needs.detect-changes.outputs.has-changes == 'true'
     runs-on: ubuntu-latest
-    environment: ppd
+
+    # Usar environment de GitHub para requerir aprobación en prod/ppd
+    environment: ${{ matrix.environment }}
+
+    # Serializa el acceso al repo: si la matrix despliega ppd y prod en paralelo,
+    # ambos compiten por el mismo `git push` a master. El group es fijo (no
+    # depende de matrix.environment) para que TODAS las entradas de la matrix
+    # se encolen entre sí en vez de correr al mismo tiempo.
+    concurrency:
+      group: railway-cd-git-write
+      cancel-in-progress: false
 
     strategy:
       fail-fast: false
@@ -104,6 +112,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # fetch-depth: 0 (historial completo) es necesario para que el retry
+          # con `git rebase origin/master` del step "Update metadata in config
+          # file" funcione — con el default (depth=1) no hay historial suficiente.
           fetch-depth: 0
 
       - name: Install dependencies (jq, curl)
@@ -113,11 +124,15 @@ jobs:
 
       - name: Show deployment plan
         run: |
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+          echo "  DEPLOYMENT PLAN"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "  App:         ${{ matrix.app }}"
           echo "  Environment: ${{ matrix.environment }}"
           echo "  Config:      ${{ matrix.config_file }}"
           echo "  Triggered by: ${{ github.actor }}"
           echo "  Commit:      ${{ github.sha }}"
+          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           cat "${{ matrix.config_file }}"
 
       - name: Validate Docker image exists
@@ -134,6 +149,7 @@ jobs:
 
       - name: Update metadata in config file
         run: |
+          # deploy-railway.sh ya actualiza el JSON, ahora commiteamos el cambio
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "${{ matrix.config_file }}"
@@ -141,18 +157,23 @@ jobs:
 
           git commit -m "chore(cd): update deploy metadata for ${{ matrix.app }}/${{ matrix.environment }} [skip ci]"
 
+          # Retry con rebase: el `concurrency` group ya serializa los jobs de este
+          # workflow, pero esto protege además contra pushes de otros workflows
+          # (promote.yml, rollback.yml) que puedan tocar master al mismo tiempo.
           MAX_ATTEMPTS=5
           for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
             if git push; then
-              echo "Push exitoso (intento $attempt)"
+              echo "✅ Push exitoso (intento $attempt)"
               exit 0
             fi
+
             if [[ "$attempt" -eq "$MAX_ATTEMPTS" ]]; then
-              echo "Push fallo despues de $MAX_ATTEMPTS intentos"
+              echo "❌ Push falló después de $MAX_ATTEMPTS intentos"
               exit 1
             fi
-            echo "Push rechazado, reintentando con rebase..."
-            sleep $(( RANDOM % 5 + 1 ))
+
+            echo "⚠️  Push rechazado (rama remota avanzó), reintentando con rebase..."
+            sleep $(( RANDOM % 5 + 1 ))  # jitter para evitar reintentos sincronizados
             git fetch origin master
             git rebase origin/master
           done
@@ -161,96 +182,12 @@ jobs:
         if: success()
         run: |
           IMAGE=$(jq -r '.image' "${{ matrix.config_file }}")
-          echo "Deployed $IMAGE to ${{ matrix.environment }} successfully"
+          echo "✅ Deployed $IMAGE to ${{ matrix.environment }} successfully"
+          # Aquí podrías agregar notificación a Slack/Teams:
+          # curl -X POST ${{ secrets.SLACK_WEBHOOK }} -d '{"text": "..."}'
 
       - name: Notify deployment failure
         if: failure()
         run: |
-          echo "Deployment FAILED for ${{ matrix.app }} in ${{ matrix.environment }}"
-
-  # ── Deploy a prod (solo si ppd corrió con éxito o no aplicaba en este run) ──
-  deploy-prod:
-    name: Deploy ${{ matrix.app }} → prod
-    needs: [detect-changes, deploy-ppd]
-    if: |
-      always() &&
-      needs.detect-changes.outputs.has-changes == 'true' &&
-      matrix.environment == 'prod' &&
-      (needs.deploy-ppd.result == 'success' || needs.deploy-ppd.result == 'skipped')
-    runs-on: ubuntu-latest
-    environment: prod
-
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
-
-    env:
-      RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Install dependencies (jq, curl)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq jq curl
-
-      - name: Show deployment plan
-        run: |
-          echo "  App:         ${{ matrix.app }}"
-          echo "  Environment: ${{ matrix.environment }}"
-          echo "  Config:      ${{ matrix.config_file }}"
-          echo "  Triggered by: ${{ github.actor }}"
-          echo "  Commit:      ${{ github.sha }}"
-          cat "${{ matrix.config_file }}"
-
-      - name: Validate Docker image exists
-        run: |
-          chmod +x scripts/validate-image.sh
-          IMAGE=$(jq -r '.image' "${{ matrix.config_file }}")
-          RAILWAY_ENVIRONMENT="${{ matrix.environment }}" \
-            ./scripts/validate-image.sh "$IMAGE"
-
-      - name: Deploy to Railway
-        run: |
-          chmod +x scripts/deploy-railway.sh
-          ./scripts/deploy-railway.sh "${{ matrix.config_file }}"
-
-      - name: Update metadata in config file
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${{ matrix.config_file }}"
-          git diff --staged --quiet && exit 0
-
-          git commit -m "chore(cd): update deploy metadata for ${{ matrix.app }}/${{ matrix.environment }} [skip ci]"
-
-          MAX_ATTEMPTS=5
-          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
-            if git push; then
-              echo "Push exitoso (intento $attempt)"
-              exit 0
-            fi
-            if [[ "$attempt" -eq "$MAX_ATTEMPTS" ]]; then
-              echo "Push fallo despues de $MAX_ATTEMPTS intentos"
-              exit 1
-            fi
-            echo "Push rechazado, reintentando con rebase..."
-            sleep $(( RANDOM % 5 + 1 ))
-            git fetch origin master
-            git rebase origin/master
-          done
-
-      - name: Notify deployment success
-        if: success()
-        run: |
-          IMAGE=$(jq -r '.image' "${{ matrix.config_file }}")
-          echo "Deployed $IMAGE to ${{ matrix.environment }} successfully"
-
-      - name: Notify deployment failure
-        if: failure()
-        run: |
-          echo "Deployment FAILED for ${{ matrix.app }} in ${{ matrix.environment }}"
+          echo "❌ Deployment FAILED for ${{ matrix.app }} in ${{ matrix.environment }}"
+          # Aquí agregar alerta a Slack/PagerDuty
