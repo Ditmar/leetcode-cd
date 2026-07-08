@@ -93,6 +93,14 @@ jobs:
     # Usar environment de GitHub para requerir aprobación en prod/ppd
     environment: ${{ matrix.environment }}
 
+    # Serializa el acceso al repo: si la matrix despliega ppd y prod en paralelo,
+    # ambos compiten por el mismo `git push` a master. El group es fijo (no
+    # depende de matrix.environment) para que TODAS las entradas de la matrix
+    # se encolen entre sí en vez de correr al mismo tiempo.
+    concurrency:
+      group: railway-cd-git-write
+      cancel-in-progress: false
+
     strategy:
       fail-fast: false
       matrix:
@@ -103,6 +111,11 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 (historial completo) es necesario para que el retry
+          # con `git rebase origin/master` del step "Update metadata in config
+          # file" funcione — con el default (depth=1) no hay historial suficiente.
+          fetch-depth: 0
 
       - name: Install dependencies (jq, curl)
         run: |
@@ -140,9 +153,30 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "${{ matrix.config_file }}"
-          git diff --staged --quiet || \
-            git commit -m "chore(cd): update deploy metadata for ${{ matrix.app }}/${{ matrix.environment }} [skip ci]"
-          git push
+          git diff --staged --quiet && exit 0
+
+          git commit -m "chore(cd): update deploy metadata for ${{ matrix.app }}/${{ matrix.environment }} [skip ci]"
+
+          # Retry con rebase: el `concurrency` group ya serializa los jobs de este
+          # workflow, pero esto protege además contra pushes de otros workflows
+          # (promote.yml, rollback.yml) que puedan tocar master al mismo tiempo.
+          MAX_ATTEMPTS=5
+          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
+            if git push; then
+              echo "✅ Push exitoso (intento $attempt)"
+              exit 0
+            fi
+
+            if [[ "$attempt" -eq "$MAX_ATTEMPTS" ]]; then
+              echo "❌ Push falló después de $MAX_ATTEMPTS intentos"
+              exit 1
+            fi
+
+            echo "⚠️  Push rechazado (rama remota avanzó), reintentando con rebase..."
+            sleep $(( RANDOM % 5 + 1 ))  # jitter para evitar reintentos sincronizados
+            git fetch origin master
+            git rebase origin/master
+          done
 
       - name: Notify deployment success
         if: success()
