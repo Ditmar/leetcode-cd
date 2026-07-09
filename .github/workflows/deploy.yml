@@ -112,6 +112,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          ref: master
           # fetch-depth: 0 (historial completo) es necesario para que el retry
           # con `git rebase origin/master` del step "Update metadata in config
           # file" funcione — con el default (depth=1) no hay historial suficiente.
@@ -175,7 +176,11 @@ jobs:
             echo "⚠️  Push rechazado (rama remota avanzó), reintentando con rebase..."
             sleep $(( RANDOM % 5 + 1 ))  # jitter para evitar reintentos sincronizados
             git fetch origin master
-            git rebase origin/master
+            git rebase origin/master || {
+              git rebase --abort
+              echo "❌ Rebase falló (posible conflicto real en el JSON), abortando"
+              exit 1
+            }
           done
 
       - name: Notify deployment success
