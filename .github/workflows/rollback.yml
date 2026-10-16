@@ -45,7 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 20  # Necesitamos historial para git-history strategy
+          fetch-depth: 100  # Necesitamos historial para git-history strategy
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
@@ -67,23 +67,28 @@ jobs:
       - name: Determine rollback target (git-history)
         id: resolve-git
         if: inputs.strategy == 'git-history'
+        shell: bash
         run: |
+          set -euo pipefail
+
           CONFIG_FILE="${{ steps.current.outputs.config_file }}"
 
-          # Obtener el penúltimo estado del archivo en git
-          PREV_IMAGE=$(git log --oneline -10 -- "$CONFIG_FILE" | \
-            awk 'NR==2{print $1}' | \
-            xargs -I{} git show {}:"$CONFIG_FILE" 2>/dev/null | \
-            jq -r '.image // empty')
+          chmod +x scripts/find-previous-image.sh
 
-          if [[ -z "$PREV_IMAGE" ]]; then
-            echo "❌ No se encontró versión anterior en el historial de git."
-            echo "Usa strategy=manual-tag y especifica el tag directamente."
+          if ! RESULT=$(./scripts/find-previous-image.sh "$CONFIG_FILE" 50); then
+            echo "::error::No se encontró una imagen anterior válida y distinta. No se continuará con el rollback."
             exit 1
           fi
 
-          echo "target_image=$PREV_IMAGE" >> $GITHUB_OUTPUT
-          echo "📦 Versión anterior encontrada: $PREV_IMAGE"
+          PREV_IMAGE=$(printf '%s\n' "$RESULT" | sed -n 's/^image=//p' | head -n 1)
+
+          if [[ -z "$PREV_IMAGE" ]]; then
+            echo "::error::El script no devolvió una imagen anterior válida."
+            exit 1
+          fi
+
+          echo "target_image=$PREV_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "Imagen anterior encontrada: $PREV_IMAGE"
 
       - name: Determine rollback target (manual-tag)
         id: resolve-manual
