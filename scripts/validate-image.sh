@@ -3,13 +3,16 @@
 # Uso: ./validate-image.sh <image:tag>
 # Ejemplo: ./validate-image.sh dockerhub-user/my-app:1.0.3
 #
-# Fail closed: solo termina con 0 si el registry responde 200 al manifiesto.
-# Cualquier otra respuesta (o no poder preguntar) detiene el deploy.
+# Fail closed: solo termina con 0 si el registry responde 200 al manifiesto con
+# un digest válido (sha256:<64 hex>). Cualquier otra respuesta (o no poder
+# preguntar) detiene el deploy.
 #
 # Variables de entorno opcionales:
-#   RAILWAY_ENVIRONMENT — con 'prod' o 'ppd' se bloquea el tag 'latest'
-#   DOCKERHUB_USERNAME  — usuario de Docker Hub (repos privados y mejor rate limit)
-#   DOCKERHUB_TOKEN     — access token de Docker Hub (junto con DOCKERHUB_USERNAME)
+#   RAILWAY_ENVIRONMENT     — con 'prod' o 'ppd' se bloquea el tag 'latest'
+#   DOCKERHUB_USERNAME      — usuario de Docker Hub (repos privados y mejor rate limit)
+#   DOCKERHUB_TOKEN         — access token de Docker Hub (junto con DOCKERHUB_USERNAME)
+#   IMAGE_VALIDATION_OUTPUT — si se define, al validar se escribe ahí
+#                             {"image": "<image:tag>", "imageDigest": "sha256:..."}
 
 set -euo pipefail
 
@@ -162,7 +165,14 @@ check_manifest() {
       return 1 ;;
   esac
 
+  IMAGE_DIGEST=$(awk 'tolower($1) == "docker-content-digest:" { d = $2 } END { print d }' "$WORK_DIR/headers" | tr -d '\r')
+  if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    log_error "El registry respondió 200 sin un Docker-Content-Digest válido ('${IMAGE_DIGEST:-vacío}')."
+    return 1
+  fi
+
   log_ok "Imagen encontrada (API): ${IMAGE_NAME}:${IMAGE_TAG}"
+  log_ok "Digest: ${IMAGE_DIGEST}"
 }
 
 # ── Ejecutar validación ──────────────────────────────────────────────────────
@@ -176,6 +186,11 @@ if [[ "$VALIDATED" == "false" ]]; then
   log_error "No se pudo confirmar que la imagen exista: ${IMAGE_NAME}:${IMAGE_TAG}"
   log_error "Verifica que la imagen fue publicada correctamente en Docker Hub."
   exit 1
+fi
+
+if [[ -n "${IMAGE_VALIDATION_OUTPUT:-}" ]]; then
+  jq -n --arg image "${IMAGE_NAME}:${IMAGE_TAG}" --arg digest "$IMAGE_DIGEST" \
+    '{image: $image, imageDigest: $digest}' > "$IMAGE_VALIDATION_OUTPUT"
 fi
 
 log_ok "Validación exitosa. Imagen lista para despliegue: ${IMAGE_NAME}:${IMAGE_TAG}"
