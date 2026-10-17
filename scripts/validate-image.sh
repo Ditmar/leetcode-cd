@@ -105,14 +105,14 @@ if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
 fi
 
 if [[ "$VALIDATED" == "false" ]]; then
-  if command -v curl &>/dev/null && command -v jq &>/dev/null; then
-    if validate_via_dockerhub_api; then
-      VALIDATED=true
+  for dep in curl jq; do
+    if ! command -v "$dep" &>/dev/null; then
+      log_error "Dependencia requerida no encontrada: $dep. No se puede validar la imagen."
+      exit 1
     fi
-  else
-    log_warn "curl o jq no disponibles. Saltando validación de imagen."
-    log_warn "Instala curl y jq para habilitar validación completa."
-    VALIDATED=true  # Continuar sin bloquear si no hay herramientas
+  done
+  if validate_via_dockerhub_api; then
+    VALIDATED=true
   fi
 fi
 
