@@ -1,126 +1,161 @@
 #!/usr/bin/env bash
-# validate-image.sh — Verifica que una imagen Docker exista en Docker Hub antes de desplegar.
-# Uso: ./validate-image.sh <image:tag>
-# Ejemplo: ./validate-image.sh dockerhub-user/my-app:1.0.3
-
 set -euo pipefail
 
-# ── Colores para output legible ──────────────────────────────────────────────
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-CYAN='\033[0;36m'
-NC='\033[0m'
-
-log_info()    { echo -e "${CYAN}[INFO]${NC}  $*"; }
-log_ok()      { echo -e "${GREEN}[OK]${NC}    $*"; }
-log_warn()    { echo -e "${YELLOW}[WARN]${NC}  $*"; }
-log_error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
-
-# ── Validar argumento ────────────────────────────────────────────────────────
-if [[ $# -lt 1 ]]; then
-  log_error "Uso: $0 <image:tag>"
-  log_error "Ejemplo: $0 dockerhub-user/my-app:1.0.3"
-  exit 1
-fi
-
-FULL_IMAGE="$1"
-
-# ── Parsear imagen y tag ─────────────────────────────────────────────────────
-if [[ "$FULL_IMAGE" == *":"* ]]; then
-  IMAGE_NAME="${FULL_IMAGE%%:*}"
-  IMAGE_TAG="${FULL_IMAGE##*:}"
-else
-  IMAGE_NAME="$FULL_IMAGE"
-  IMAGE_TAG="latest"
-  log_warn "No se especificó tag. Usando 'latest' — se recomienda evitar latest en producción."
-fi
-
-log_info "Validando imagen: ${IMAGE_NAME}:${IMAGE_TAG}"
-
-# ── Guardia: bloquear 'latest' en ambientes de prod/ppd ─────────────────────
-# Se puede pasar RAILWAY_ENVIRONMENT como variable de entorno al script.
-ENVIRONMENT="${RAILWAY_ENVIRONMENT:-}"
-if [[ "$IMAGE_TAG" == "latest" && ("$ENVIRONMENT" == "prod" || "$ENVIRONMENT" == "ppd") ]]; then
-  log_error "El tag 'latest' está PROHIBIDO en ambiente '$ENVIRONMENT'."
-  log_error "Especifica un tag semántico concreto, por ejemplo: 1.0.3"
-  exit 1
-fi
-
-# ── Método 1: docker manifest inspect (requiere Docker instalado) ────────────
-validate_via_docker_manifest() {
-  log_info "Verificando con 'docker manifest inspect'..."
-  if docker manifest inspect "${IMAGE_NAME}:${IMAGE_TAG}" > /dev/null 2>&1; then
-    log_ok "Imagen encontrada en registry: ${IMAGE_NAME}:${IMAGE_TAG}"
-    return 0
-  else
-    return 1
-  fi
+log_error() {
+  printf 'ERROR: %s\n' "$*" >&2
 }
 
-# ── Método 2: Docker Hub API v2 (no requiere Docker, funciona en CI) ─────────
-validate_via_dockerhub_api() {
-  log_info "Verificando con Docker Hub API..."
-
-  # Para repositorios privados, DOCKERHUB_TOKEN debe estar en el entorno.
-  local auth_header=""
-  if [[ -n "${DOCKERHUB_TOKEN:-}" ]]; then
-    # Obtener token JWT de Docker Hub
-    local token
-    token=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${IMAGE_NAME}:pull" \
-      -u "${DOCKERHUB_USERNAME:-}:${DOCKERHUB_TOKEN}" | jq -r '.token')
-    auth_header="Authorization: Bearer ${token}"
-  else
-    # Repositorio público: obtener token anónimo
-    local token
-    token=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${IMAGE_NAME}:pull" \
-      | jq -r '.token')
-    auth_header="Authorization: Bearer ${token}"
-  fi
-
-  local http_status
-  http_status=$(curl -s -o /dev/null -w "%{http_code}" \
-    -H "$auth_header" \
-    "https://registry-1.docker.io/v2/${IMAGE_NAME}/manifests/${IMAGE_TAG}")
-
-  if [[ "$http_status" == "200" ]]; then
-    log_ok "Imagen encontrada (API): ${IMAGE_NAME}:${IMAGE_TAG}"
-    return 0
-  elif [[ "$http_status" == "404" ]]; then
-    log_error "Imagen NO encontrada (404): ${IMAGE_NAME}:${IMAGE_TAG}"
-    return 1
-  else
-    log_warn "Respuesta inesperada de la API (HTTP $http_status). Asumiendo que la imagen existe."
-    return 0
-  fi
+usage() {
+  printf 'Usage: %s [--format-only <environment> <image>] <image>\n' "$0" >&2
 }
 
-# ── Ejecutar validación ──────────────────────────────────────────────────────
-VALIDATED=false
+validate_prerelease() {
+  local prerelease="$1"
+  local identifier
+  local -a identifiers
 
-if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
-  if validate_via_docker_manifest; then
-    VALIDATED=true
-  fi
-fi
+  [[ "$prerelease" =~ ^[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*$ ]] || return 1
+  IFS='.' read -r -a identifiers <<< "$prerelease"
 
-if [[ "$VALIDATED" == "false" ]]; then
-  if command -v curl &>/dev/null && command -v jq &>/dev/null; then
-    if validate_via_dockerhub_api; then
-      VALIDATED=true
+  for identifier in "${identifiers[@]}"; do
+    [[ "$identifier" =~ ^[0-9A-Za-z-]+$ ]] || return 1
+    if [[ "$identifier" =~ ^[0-9]+$ && "$identifier" =~ ^0[0-9]+$ ]]; then
+      return 1
     fi
-  else
-    log_warn "curl o jq no disponibles. Saltando validación de imagen."
-    log_warn "Instala curl y jq para habilitar validación completa."
-    VALIDATED=true  # Continuar sin bloquear si no hay herramientas
+  done
+}
+
+validate_image_format() {
+  local environment="$1"
+  local image="$2"
+  local name
+  local tag
+  local version
+  local prerelease=""
+
+  case "$environment" in
+    dev|qa|ppd|prod) ;;
+    *)
+      log_error "Unsupported environment '$environment'."
+      return 1
+      ;;
+  esac
+
+  if [[ "$image" != *:* ]]; then
+    log_error "Image '$image' must include an explicit semantic-version tag."
+    return 1
   fi
-fi
 
-if [[ "$VALIDATED" == "false" ]]; then
-  log_error "No se pudo confirmar que la imagen exista: ${IMAGE_NAME}:${IMAGE_TAG}"
-  log_error "Verifica que la imagen fue publicada correctamente en Docker Hub."
-  exit 1
-fi
+  name="${image%:*}"
+  tag="${image##*:}"
+  if [[ "$name" == *:* || ! "$name" =~ ^[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$ ]]; then
+    log_error "Image '$image' must use the Docker Hub format owner/name:X.Y.Z."
+    return 1
+  fi
+  if ((${#tag} > 128)); then
+    log_error "Image tag '$tag' exceeds Docker's 128-character limit."
+    return 1
+  fi
 
-log_ok "Validación exitosa. Imagen lista para despliegue: ${IMAGE_NAME}:${IMAGE_TAG}"
-exit 0
+  if [[ "$tag" == "latest" ]]; then
+    log_error "The mutable 'latest' tag is not allowed."
+    return 1
+  fi
+
+  version="$tag"
+  if [[ "$tag" == *-* ]]; then
+    version="${tag%%-*}"
+    prerelease="${tag#*-}"
+    if ! validate_prerelease "$prerelease"; then
+      log_error "Image tag '$tag' has an invalid semantic-version prerelease."
+      return 1
+    fi
+  fi
+
+  if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+    log_error "Image tag '$tag' must be a semantic version X.Y.Z."
+    return 1
+  fi
+
+  if [[ "$environment" == "prod" && -n "$prerelease" ]]; then
+    log_error "Prerelease tags are not allowed in prod."
+    return 1
+  fi
+
+  if [[ "$environment" == "ppd" && -n "$prerelease" && "${prerelease%%.*}" != "rc" ]]; then
+    log_error "Only documented rc prereleases are allowed in ppd."
+    return 1
+  fi
+}
+
+verify_docker_hub_tag() {
+  local image="$1"
+  local repository="${image%:*}"
+  local tag="${image##*:}"
+  local url="https://hub.docker.com/v2/repositories/${repository}/tags/${tag}"
+  local curl_bin="${CURL_BIN:-curl}"
+  local http_status
+
+  if ! command -v "$curl_bin" >/dev/null 2>&1; then
+    log_error "Required tool '$curl_bin' is not available; image verification cannot continue."
+    return 1
+  fi
+
+  if ! http_status=$("$curl_bin" --silent --show-error --connect-timeout 10 --max-time 30 \
+    --output /dev/null --write-out '%{http_code}' "$url"); then
+    log_error "Could not connect to Docker Hub while verifying '$image'."
+    return 1
+  fi
+
+  case "$http_status" in
+    200)
+      printf 'Docker Hub confirms image exists: %s\n' "$image"
+      ;;
+    401|403)
+      log_error "Docker Hub denied access (HTTP $http_status) while verifying '$image'."
+      return 1
+      ;;
+    404)
+      log_error "Image tag was not found on Docker Hub: $image"
+      return 1
+      ;;
+    5??)
+      log_error "Docker Hub returned HTTP $http_status while verifying '$image'."
+      return 1
+      ;;
+    *)
+      log_error "Unexpected Docker Hub response (HTTP $http_status) for '$image'."
+      return 1
+      ;;
+  esac
+}
+
+main() {
+  local environment="${RAILWAY_ENVIRONMENT:-}"
+  local image
+
+  if [[ "${1:-}" == "--format-only" ]]; then
+    if [[ $# -ne 3 ]]; then
+      usage
+      return 2
+    fi
+    environment="$2"
+    image="$3"
+    validate_image_format "$environment" "$image"
+    return
+  fi
+
+  if [[ $# -ne 1 || -z "$environment" ]]; then
+    usage
+    log_error "Set RAILWAY_ENVIRONMENT to dev, qa, ppd, or prod."
+    return 2
+  fi
+
+  image="$1"
+  if ! validate_image_format "$environment" "$image"; then
+    return 1
+  fi
+  verify_docker_hub_tag "$image"
+}
+
+main "$@"

@@ -1,0 +1,107 @@
+name: Pull Request Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-configs:
+    name: Validate deployment configs
+    runs-on: ubuntu-24.04
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run isolated validation tests
+        run: bash tests/test-pr-checks.sh
+
+      - name: Validate deployment JSON
+        run: bash scripts/validate-configs.sh "$BASE_SHA"
+
+      - name: Enforce protected infrastructure fields
+        run: bash scripts/check-config-changes.sh "$BASE_SHA"
+
+      - name: Verify changed images on Docker Hub
+        run: bash scripts/validate-changed-images.sh "$BASE_SHA"
+
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install verified ShellCheck release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="0.10.0"
+          archive="shellcheck-v${version}.linux.x86_64.tar.xz"
+          release_url="https://github.com/koalaman/shellcheck/releases/download/v${version}"
+          install_dir="${RUNNER_TEMP}/shellcheck"
+          expected_sha="6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87"
+          mkdir -p "$install_dir"
+          curl --fail --silent --show-error --location \
+            "${release_url}/${archive}" -o "${install_dir}/${archive}"
+          printf '%s  %s\n' "$expected_sha" "${install_dir}/${archive}" | sha256sum --check --status
+          tar -xJf "${install_dir}/${archive}" -C "$install_dir" --strip-components=1 \
+            "shellcheck-v${version}/shellcheck"
+          chmod +x "${install_dir}/shellcheck"
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "${install_dir}/shellcheck" --version
+
+      - name: Analyze Bash scripts
+        run: shellcheck --severity=warning scripts/*.sh tests/test-pr-checks.sh
+
+      - name: Confirm ShellCheck catches a known defect
+        run: |
+          if shellcheck --severity=warning tests/fixtures/shellcheck-failure.sh; then
+            echo "ShellCheck did not detect the intentionally invalid fixture." >&2
+            exit 1
+          fi
+
+  actionlint:
+    name: Actionlint
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install verified Actionlint release
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="1.7.7"
+          archive="actionlint_${version}_linux_amd64.tar.gz"
+          release_url="https://github.com/rhysd/actionlint/releases/download/v${version}"
+          install_dir="${RUNNER_TEMP}/actionlint"
+          expected_sha="023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
+          mkdir -p "$install_dir"
+          curl --fail --silent --show-error --location \
+            "${release_url}/${archive}" -o "${install_dir}/${archive}"
+          printf '%s  %s\n' "$expected_sha" "${install_dir}/${archive}" | sha256sum --check --status
+          tar -xzf "${install_dir}/${archive}" -C "$install_dir" actionlint
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "${install_dir}/actionlint" -version
+
+      - name: Analyze GitHub Actions workflows
+        run: actionlint -shellcheck= .github/workflows/*.yml
+
+      - name: Confirm Actionlint catches an invalid workflow
+        run: |
+          if actionlint tests/fixtures/actionlint-failure.yml; then
+            echo "Actionlint did not detect the intentionally invalid fixture." >&2
+            exit 1
+          fi
