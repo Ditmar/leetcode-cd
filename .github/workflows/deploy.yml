@@ -1,8 +1,8 @@
+
 name: Deploy to Railway
 
-# ── Triggers ──────────────────────────────────────────────────────────────────
-# Se dispara cuando se hace merge a main de un PR que modifica un archivo de ambiente.
-# También puede dispararse manualmente con elección de ambiente.
+# Deploy when environment JSON files change on master.
+# Manual deployment is also supported.
 on:
   push:
     branches: [master]
@@ -15,84 +15,139 @@ on:
   workflow_dispatch:
     inputs:
       app:
-        description: "Nombre de la app (ej: my-app)"
+        description: "Application name (example: leetcode-spa)"
         required: true
         type: string
       environment:
-        description: "Ambiente a desplegar"
+        description: "Target environment"
         required: true
         type: choice
         options: [dev, qa, ppd, prod]
 
-# ── Permisos mínimos necesarios ───────────────────────────────────────────────
 permissions:
-  contents: write   # para commitear la actualización de deployedAt en el JSON
+  contents: write
   pull-requests: read
 
 jobs:
-  # ── Detectar qué archivos cambiaron ────────────────────────────────────────
   detect-changes:
     name: Detect changed environments
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+
     outputs:
       matrix: ${{ steps.build-matrix.outputs.matrix }}
       has-changes: ${{ steps.build-matrix.outputs.has-changes }}
+
+    defaults:
+      run:
+        shell: bash
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 2
 
       - name: Build deployment matrix
         id: build-matrix
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_APP: ${{ inputs.app }}
+          INPUT_ENVIRONMENT: ${{ inputs.environment }}
         run: |
-          # Manual dispatch: construir matrix desde inputs
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            APP="${{ inputs.app }}"
-            ENV="${{ inputs.environment }}"
-            MATRIX=$(jq -n \
-              --arg app "$APP" \
-              --arg env "$ENV" \
-              --arg file "apps/$APP/$ENV.json" \
-              '[{"app": $app, "environment": $env, "config_file": $file}]')
-            echo "matrix=$(echo $MATRIX | jq -c .)" >> $GITHUB_OUTPUT
-            echo "has-changes=true" >> $GITHUB_OUTPUT
-            exit 0
+          set -euo pipefail
+
+          MATRIX='[]'
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ ! "$INPUT_APP" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+              echo "ERROR: Invalid application name." >&2
+              exit 1
+            fi
+
+            case "$INPUT_ENVIRONMENT" in
+              dev|qa|ppd|prod) ;;
+              *)
+                echo "ERROR: Invalid environment." >&2
+                exit 1
+                ;;
+            esac
+
+            CONFIG_FILE="apps/$INPUT_APP/$INPUT_ENVIRONMENT.json"
+
+            if [[ ! -f "$CONFIG_FILE" ]]; then
+              echo "ERROR: Configuration not found: $CONFIG_FILE" >&2
+              exit 1
+            fi
+
+            MATRIX="$(
+              jq -cn \
+                --arg app "$INPUT_APP" \
+                --arg env "$INPUT_ENVIRONMENT" \
+                --arg file "$CONFIG_FILE" \
+                '[{
+                  app: $app,
+                  environment: $env,
+                  config_file: $file
+                }]'
+            )"
+          else
+            CHANGED_FILES="$(mktemp)"
+            trap 'rm -f "$CHANGED_FILES"' EXIT
+
+            if ! git diff --name-only -z HEAD^ HEAD -- apps/ > "$CHANGED_FILES"; then
+              echo "ERROR: Could not detect changed files." >&2
+              exit 1
+            fi
+
+            while IFS= read -r -d '' FILE; do
+              if [[ ! "$FILE" =~ ^apps/([a-zA-Z0-9_-]+)/(dev|qa|ppd|prod)\.json$ ]]; then
+                continue
+              fi
+
+              if [[ ! -f "$FILE" ]]; then
+                continue
+              fi
+
+              APP_NAME="${BASH_REMATCH[1]}"
+              TARGET_ENVIRONMENT="${BASH_REMATCH[2]}"
+
+              ENTRY="$(
+                jq -cn \
+                  --arg app "$APP_NAME" \
+                  --arg env "$TARGET_ENVIRONMENT" \
+                  --arg file "$FILE" \
+                  '{
+                    app: $app,
+                    environment: $env,
+                    config_file: $file
+                  }'
+              )"
+
+              MATRIX="$(
+                jq -cn \
+                  --argjson matrix "$MATRIX" \
+                  --argjson entry "$ENTRY" \
+                  '$matrix + [$entry]'
+              )"
+            done < "$CHANGED_FILES"
           fi
 
-          # Push a main: detectar archivos JSON que cambiaron
-          CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD -- 'apps/**/*.json' 2>/dev/null || \
-                          git diff --name-only HEAD^ HEAD -- 'apps/**/*.json')
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
 
-          if [[ -z "$CHANGED_FILES" ]]; then
-            echo "has-changes=false" >> $GITHUB_OUTPUT
-            echo "matrix=[]" >> $GITHUB_OUTPUT
-            exit 0
+          if [[ "$MATRIX" == "[]" ]]; then
+            echo "has-changes=false" >> "$GITHUB_OUTPUT"
+            echo "No environments require deployment."
+          else
+            echo "has-changes=true" >> "$GITHUB_OUTPUT"
+            echo "Deployment matrix: $MATRIX"
           fi
 
-          MATRIX="[]"
-          while IFS= read -r file; do
-            # Parsear app y ambiente del path: apps/<app>/<env>.json
-            APP=$(echo "$file" | cut -d'/' -f2)
-            ENV=$(echo "$file" | cut -d'/' -f3 | sed 's/\.json$//')
-            ENTRY=$(jq -n \
-              --arg app "$APP" \
-              --arg env "$ENV" \
-              --arg file "$file" \
-              '{"app": $app, "environment": $env, "config_file": $file}')
-            MATRIX=$(echo "$MATRIX" | jq --argjson entry "$ENTRY" '. + [$entry]')
-          done <<< "$CHANGED_FILES"
-
-          echo "matrix=$(echo $MATRIX | jq -c .)" >> $GITHUB_OUTPUT
-          echo "has-changes=true" >> $GITHUB_OUTPUT
-
-  # ── Deploy por cada ambiente que cambió ────────────────────────────────────
   deploy:
-    name: Deploy ${{ matrix.app }} → ${{ matrix.environment }}
+    name: Deploy ${{ matrix.app }} to ${{ matrix.environment }}
     needs: detect-changes
     if: needs.detect-changes.outputs.has-changes == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
 
-    # Usar environment de GitHub para requerir aprobación en prod/ppd
     environment: ${{ matrix.environment }}
 
     strategy:
@@ -103,59 +158,85 @@ jobs:
     env:
       RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
 
-    steps:
-      - uses: actions/checkout@v4
+    defaults:
+      run:
+        shell: bash
 
-      - name: Install dependencies (jq, curl)
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq jq curl
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Show deployment plan
+        env:
+          APP_NAME: ${{ matrix.app }}
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
+          CONFIG_FILE: ${{ matrix.config_file }}
+          ACTOR: ${{ github.actor }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  DEPLOYMENT PLAN"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  App:         ${{ matrix.app }}"
-          echo "  Environment: ${{ matrix.environment }}"
-          echo "  Config:      ${{ matrix.config_file }}"
-          echo "  Triggered by: ${{ github.actor }}"
-          echo "  Commit:      ${{ github.sha }}"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          cat "${{ matrix.config_file }}"
+          set -euo pipefail
 
-      - name: Validate Docker image exists
-        run: |
-          chmod +x scripts/validate-image.sh
-          IMAGE=$(jq -r '.image' "${{ matrix.config_file }}")
-          RAILWAY_ENVIRONMENT="${{ matrix.environment }}" \
-            ./scripts/validate-image.sh "$IMAGE"
+          echo "DEPLOYMENT PLAN"
+          printf 'App: %s\n' "$APP_NAME"
+          printf 'Environment: %s\n' "$TARGET_ENVIRONMENT"
+          printf 'Configuration: %s\n' "$CONFIG_FILE"
+          printf 'Triggered by: %s\n' "$ACTOR"
+          printf 'Commit: %s\n' "$COMMIT_SHA"
+
+          if [[ ! -f "$CONFIG_FILE" ]]; then
+            echo "ERROR: Deployment configuration not found." >&2
+            exit 1
+          fi
+
+          cat "$CONFIG_FILE"
 
       - name: Deploy to Railway
+        env:
+          CONFIG_FILE: ${{ matrix.config_file }}
         run: |
-          chmod +x scripts/deploy-railway.sh
-          ./scripts/deploy-railway.sh "${{ matrix.config_file }}"
+          set -euo pipefail
+
+          # deploy-railway.sh validates the image before deployment.
+          bash scripts/deploy-railway.sh "$CONFIG_FILE"
 
       - name: Update metadata in config file
+        env:
+          CONFIG_FILE: ${{ matrix.config_file }}
+          APP_NAME: ${{ matrix.app }}
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
         run: |
-          # deploy-railway.sh ya actualiza el JSON, ahora commiteamos el cambio
-          git config user.name  "github-actions[bot]"
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${{ matrix.config_file }}"
-          git diff --staged --quiet || \
-            git commit -m "chore(cd): update deploy metadata for ${{ matrix.app }}/${{ matrix.environment }} [skip ci]"
-          git push
+
+          git add -- "$CONFIG_FILE"
+
+          if ! git diff --cached --quiet; then
+            git commit -m "chore(cd): update deploy metadata for $APP_NAME/$TARGET_ENVIRONMENT [skip ci]"
+            git push
+          else
+            echo "No metadata changes to commit."
+          fi
 
       - name: Notify deployment success
         if: success()
+        env:
+          CONFIG_FILE: ${{ matrix.config_file }}
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
         run: |
-          IMAGE=$(jq -r '.image' "${{ matrix.config_file }}")
-          echo "✅ Deployed $IMAGE to ${{ matrix.environment }} successfully"
-          # Aquí podrías agregar notificación a Slack/Teams:
-          # curl -X POST ${{ secrets.SLACK_WEBHOOK }} -d '{"text": "..."}'
+          set -euo pipefail
+
+          IMAGE="$(jq -er '.image | strings' "$CONFIG_FILE")"
+
+          printf 'Deployed %s to %s successfully.\n' \
+            "$IMAGE" "$TARGET_ENVIRONMENT"
 
       - name: Notify deployment failure
         if: failure()
+        env:
+          APP_NAME: ${{ matrix.app }}
+          TARGET_ENVIRONMENT: ${{ matrix.environment }}
         run: |
-          echo "❌ Deployment FAILED for ${{ matrix.app }} in ${{ matrix.environment }}"
-          # Aquí agregar alerta a Slack/PagerDuty
+          printf 'Deployment failed for %s in %s.\n' \
+            "$APP_NAME" "$TARGET_ENVIRONMENT" >&2
