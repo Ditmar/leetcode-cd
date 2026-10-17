@@ -334,3 +334,92 @@ El tag `latest` es una referencia mutable — apunta a "la última imagen" y cam
 | prod | `MAYOR.MENOR.PATCH` | `1.2.0` |
 
 El script `validate-image.sh` bloquea activamente el uso de `latest` en `ppd` y `prod`.
+
+---
+
+## Checks automáticos de Pull Requests (CD-009)
+
+`.github/workflows/pr-checks.yml` ejecuta checks al abrir, actualizar o reabrir
+cualquier Pull Request, sin filtrar por rama destino. El workflow solo tiene
+permiso `contents: read`: no consume secretos, no despliega y no escribe en el
+repositorio.
+
+Los checks estables que pueden exigirse antes de fusionar son:
+
+| Check requerido | Responsabilidad |
+|-----------------|-----------------|
+| `Validate deployment configs` | Esquema JSON, comparación de infraestructura y verificación de imágenes modificadas |
+| `ShellCheck` | Análisis estático de los scripts Bash |
+| `Actionlint` | Análisis de todos los workflows de GitHub Actions |
+
+### Política de configuración e infraestructura
+
+- El validador reconoce `dev`, `qa`, `ppd` y `prod`; las configuraciones
+  actualmente presentes en `master` usan `ppd` y `prod`. El valor Railway
+  correspondiente a `prod` es `production`.
+- El esquema acepta únicamente sus campos conocidos. `imageDigest` es
+  opcional y, si está presente, debe usar `sha256:` seguido de 64 dígitos
+  hexadecimales minúsculos. Se valida su forma, no que corresponda al
+  manifiesto de la referencia etiquetada `image`.
+- Actualmente `master` contiene cuatro configuraciones: `ppd.json` y
+  `prod.json` para `api-leetcode` y `leetcode-spa`. Todos sus valores `app`
+  deben coincidir con el directorio de la aplicación y los tres identificadores
+  Railway deben ser UUID válidos. No se aceptan placeholders heredados ni
+  nuevos. El validador conserva compatibilidad de formato con ambientes `dev`
+  y `qa` si se incorporan en un cambio posterior autorizado, pero estos
+  archivos no forman parte del estado actual de `master`.
+- En configuraciones existentes solo pueden cambiar `image`, `notes`,
+  `deployedAt`, `deployedBy` y `commitSha`. `imageDigest` y las demás
+  propiedades son protegidos; los objetos se comparan semánticamente con
+  `jq`, por lo que formato e indentación no generan falsos positivos.
+- Agregar o eliminar archivos de configuración también falla. No existe una
+  etiqueta ni otra excepción automática para permitir cambios de
+  infraestructura o de esquema.
+
+### Política de imágenes
+
+Las referencias nuevas o modificadas deben ser `owner/name:X.Y.Z` con versión
+SemVer explícita; no se admite `latest`. `dev` y `qa` aceptan prereleases
+SemVer, `ppd` acepta versiones estables y prereleases `rc`, y `prod` solo
+versiones estables. El workflow consulta los tags de Docker Hub sin descargar
+capas. Solo HTTP 200 es éxito; errores de red, autenticación, 404, 5xx,
+respuestas inesperadas o herramientas faltantes hacen fallar el check. Para
+mantener seguro el evento `pull_request`, la verificación es anónima: las
+imágenes privadas no pueden verificarse con secretos del repositorio y fallan
+cerrado.
+
+Una imagen sin cambios evita la consulta externa si su valor es idéntico al
+de la rama base. Su sintaxis y política de versión se siguen comprobando.
+
+### Hacer obligatorios los checks
+
+Un administrador del repositorio debe configurar en GitHub **Settings →
+Branches** (protección de rama) o **Settings → Rules → Rulesets**:
+
+1. Seleccionar `master` como rama de integración y exigir Pull Requests antes de
+   fusionar.
+2. Activar la exigencia de checks/status checks y agregar exactamente:
+   `Validate deployment configs`, `ShellCheck` y `Actionlint`.
+3. Guardar la regla y verificar que los tres checks aparecen en una PR.
+
+El workflow se ejecuta para cualquier rama destino, pero la protección se
+configura por rama. El Pull Request de CD-009 debe apuntar a `master`. Si el equipo decide
+proteger otras ramas, deben configurarse reglas independientes. Si solo el docente tiene permisos
+administrativos, un mantenedor debe enviarle estos tres nombres de checks y
+solicitar que aplique la regla; esta implementación no cambia ajustes remotos.
+
+### Herramientas y compatibilidad de CD-005
+
+Los validadores usan `jq`, `curl`, Bash y `date` del runner Ubuntu 24.04.
+ShellCheck v0.10.0 y Actionlint v1.7.7 se descargan desde sus releases
+oficiales y se verifican con SHA-256 fijados. Los workflows operativos se
+fijaron a `ubuntu-24.04`; `actions/checkout` usa el commit verificado
+`11bd71901bbe5b1630ceea73d27597364c9af683` (v4.2.2). Las instalaciones redundantes de jq/curl se evitan cuando las
+herramientas están disponibles en el runner.
+
+CD-005 debe confirmar la semántica y el vínculo entre `imageDigest` y
+`image` antes de añadir funcionalidad por digest. Esta validación no sustituye
+ni modifica la validación de imágenes de CD-005: actualmente solo se verifica
+la existencia de la etiqueta Docker Hub cuando cambia `image`, y el campo
+`imageDigest` permanece opcional, sintácticamente validado y protegido contra
+cambios ordinarios.
