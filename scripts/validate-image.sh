@@ -2,6 +2,17 @@
 # validate-image.sh — Verifica que una imagen Docker exista en Docker Hub antes de desplegar.
 # Uso: ./validate-image.sh <image:tag>
 # Ejemplo: ./validate-image.sh dockerhub-user/my-app:1.0.3
+#
+# Fail closed: solo termina con 0 si el registry responde 200 al manifiesto con
+# un digest válido (sha256:<64 hex>). Cualquier otra respuesta (o no poder
+# preguntar) detiene el deploy.
+#
+# Variables de entorno opcionales:
+#   RAILWAY_ENVIRONMENT     — con 'prod' o 'ppd' se bloquea el tag 'latest'
+#   DOCKERHUB_USERNAME      — usuario de Docker Hub (repos privados y mejor rate limit)
+#   DOCKERHUB_TOKEN         — access token de Docker Hub (junto con DOCKERHUB_USERNAME)
+#   IMAGE_VALIDATION_OUTPUT — si se define, al validar se escribe ahí
+#                             {"image": "<image:tag>", "imageDigest": "sha256:..."}
 
 set -euo pipefail
 
@@ -47,79 +58,139 @@ if [[ "$IMAGE_TAG" == "latest" && ("$ENVIRONMENT" == "prod" || "$ENVIRONMENT" ==
   exit 1
 fi
 
-# ── Método 1: docker manifest inspect (requiere Docker instalado) ────────────
-validate_via_docker_manifest() {
-  log_info "Verificando con 'docker manifest inspect'..."
-  if docker manifest inspect "${IMAGE_NAME}:${IMAGE_TAG}" > /dev/null 2>&1; then
-    log_ok "Imagen encontrada en registry: ${IMAGE_NAME}:${IMAGE_TAG}"
-    return 0
+# ── Dependencias (sin ellas no se puede confirmar nada → fallar) ─────────────
+for dep in curl jq; do
+  if ! command -v "$dep" &>/dev/null; then
+    log_error "Dependencia requerida no encontrada: $dep. No se puede validar la imagen."
+    exit 1
+  fi
+done
+
+AUTH_URL="https://auth.docker.io/token"
+REGISTRY_URL="https://registry-1.docker.io"
+# OCI index, manifest list v2, manifest v2 y manifiesto OCI de una sola arquitectura.
+ACCEPT_TYPES="application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json, application/vnd.oci.image.manifest.v1+json"
+
+WORK_DIR="$(mktemp -d)"
+trap 'rm -rf "$WORK_DIR"' EXIT
+
+# Credenciales y tokens van en un archivo de config de curl (modo 600 vía mktemp),
+# nunca en la línea de comandos, para que no aparezcan en `ps` ni en logs.
+curl_config_quote() {
+  local s="${1//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  printf '"%s"' "$s"
+}
+
+# ── Helper: petición HTTP con 3 reintentos (1, 2 y 4 s) en 429 y 5xx ─────────
+# Uso: http_request <curl-config> <url> [args extra de curl]
+# Deja el código en HTTP_STATUS ("000" = sin respuesta), el cuerpo en
+# $WORK_DIR/body y las cabeceras en $WORK_DIR/headers.
+http_request() {
+  local config="$1" url="$2"
+  shift 2
+  local attempt wait
+  for attempt in 1 2 3 4; do
+    HTTP_STATUS=$(curl -sS --config "$config" --connect-timeout 10 --max-time 30 \
+      -o "$WORK_DIR/body" -D "$WORK_DIR/headers" -w '%{http_code}' "$@" "$url") || HTTP_STATUS="000"
+
+    if [[ "$HTTP_STATUS" != "429" && "$HTTP_STATUS" != 5?? ]]; then
+      return 0
+    fi
+    if (( attempt < 4 )); then
+      wait=$(( 1 << (attempt - 1) ))
+      log_warn "HTTP ${HTTP_STATUS} de ${url%%\?*}. Reintento ${attempt}/3 en ${wait}s..."
+      sleep "$wait"
+    fi
+  done
+}
+
+# Explica por qué una respuesta no permite confirmar la imagen.
+explain_status() {
+  case "$HTTP_STATUS" in
+    000) log_error "No se pudo conectar con $1 (¿sin red?)." ;;
+    429) log_error "$1 respondió 429 (rate limit) tras 3 reintentos." ;;
+    5??) log_error "$1 no está disponible (HTTP ${HTTP_STATUS}) tras 3 reintentos." ;;
+    *)   log_error "Respuesta inesperada de $1 (HTTP ${HTTP_STATUS})." ;;
+  esac
+}
+
+# ── Paso 1: token de pull para el repositorio ────────────────────────────────
+get_registry_token() {
+  local config="$WORK_DIR/auth.cfg"
+  : > "$config"
+  if [[ -n "${DOCKERHUB_USERNAME:-}" && -n "${DOCKERHUB_TOKEN:-}" ]]; then
+    log_info "Usando credenciales de Docker Hub."
+    printf 'user = %s\n' "$(curl_config_quote "${DOCKERHUB_USERNAME}:${DOCKERHUB_TOKEN}")" > "$config"
   else
+    log_info "Sin credenciales de Docker Hub: usando acceso anónimo."
+  fi
+
+  http_request "$config" "${AUTH_URL}?service=registry.docker.io&scope=repository:${IMAGE_NAME}:pull"
+  if [[ "$HTTP_STATUS" == "401" || "$HTTP_STATUS" == "403" ]]; then
+    log_error "Docker Hub rechazó las credenciales (HTTP ${HTTP_STATUS})."
+    return 1
+  elif [[ "$HTTP_STATUS" != "200" ]]; then
+    explain_status "el servicio de tokens de Docker Hub"
+    return 1
+  fi
+
+  REGISTRY_TOKEN=$(jq -r '.token // empty' "$WORK_DIR/body" 2>/dev/null | tr -d '\r') || REGISTRY_TOKEN=""
+  if [[ -z "$REGISTRY_TOKEN" || "$REGISTRY_TOKEN" == "null" ]]; then
+    log_error "Docker Hub no devolvió un token válido."
     return 1
   fi
 }
 
-# ── Método 2: Docker Hub API v2 (no requiere Docker, funciona en CI) ─────────
-validate_via_dockerhub_api() {
-  log_info "Verificando con Docker Hub API..."
+# ── Paso 2: HEAD al manifiesto ───────────────────────────────────────────────
+check_manifest() {
+  local config="$WORK_DIR/registry.cfg"
+  {
+    printf 'header = %s\n' "$(curl_config_quote "Authorization: Bearer ${REGISTRY_TOKEN}")"
+    printf 'header = %s\n' "$(curl_config_quote "Accept: ${ACCEPT_TYPES}")"
+  } > "$config"
 
-  # Para repositorios privados, DOCKERHUB_TOKEN debe estar en el entorno.
-  local auth_header=""
-  if [[ -n "${DOCKERHUB_TOKEN:-}" ]]; then
-    # Obtener token JWT de Docker Hub
-    local token
-    token=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${IMAGE_NAME}:pull" \
-      -u "${DOCKERHUB_USERNAME:-}:${DOCKERHUB_TOKEN}" | jq -r '.token')
-    auth_header="Authorization: Bearer ${token}"
-  else
-    # Repositorio público: obtener token anónimo
-    local token
-    token=$(curl -s "https://auth.docker.io/token?service=registry.docker.io&scope=repository:${IMAGE_NAME}:pull" \
-      | jq -r '.token')
-    auth_header="Authorization: Bearer ${token}"
-  fi
+  http_request "$config" "${REGISTRY_URL}/v2/${IMAGE_NAME}/manifests/${IMAGE_TAG}" --head
+  case "$HTTP_STATUS" in
+    200) ;;
+    404)
+      log_error "El tag '${IMAGE_TAG}' no existe en ${IMAGE_NAME} (HTTP 404)."
+      return 1 ;;
+    401|403)
+      # Docker Hub responde 401 (no 404) cuando el repositorio no existe.
+      log_error "El repositorio '${IMAGE_NAME}' no existe o no hay acceso (HTTP ${HTTP_STATUS})."
+      return 1 ;;
+    *)
+      explain_status "el registry de Docker Hub"
+      return 1 ;;
+  esac
 
-  local http_status
-  http_status=$(curl -s -o /dev/null -w "%{http_code}" \
-    -H "$auth_header" \
-    "https://registry-1.docker.io/v2/${IMAGE_NAME}/manifests/${IMAGE_TAG}")
-
-  if [[ "$http_status" == "200" ]]; then
-    log_ok "Imagen encontrada (API): ${IMAGE_NAME}:${IMAGE_TAG}"
-    return 0
-  elif [[ "$http_status" == "404" ]]; then
-    log_error "Imagen NO encontrada (404): ${IMAGE_NAME}:${IMAGE_TAG}"
+  IMAGE_DIGEST=$(awk 'tolower($1) == "docker-content-digest:" { d = $2 } END { print d }' "$WORK_DIR/headers" | tr -d '\r')
+  if [[ ! "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+    log_error "El registry respondió 200 sin un Docker-Content-Digest válido ('${IMAGE_DIGEST:-vacío}')."
     return 1
-  else
-    log_warn "Respuesta inesperada de la API (HTTP $http_status). Asumiendo que la imagen existe."
-    return 0
   fi
+
+  log_ok "Imagen encontrada (API): ${IMAGE_NAME}:${IMAGE_TAG}"
+  log_ok "Digest: ${IMAGE_DIGEST}"
 }
 
 # ── Ejecutar validación ──────────────────────────────────────────────────────
 VALIDATED=false
 
-if command -v docker &>/dev/null && docker info &>/dev/null 2>&1; then
-  if validate_via_docker_manifest; then
-    VALIDATED=true
-  fi
-fi
-
-if [[ "$VALIDATED" == "false" ]]; then
-  if command -v curl &>/dev/null && command -v jq &>/dev/null; then
-    if validate_via_dockerhub_api; then
-      VALIDATED=true
-    fi
-  else
-    log_warn "curl o jq no disponibles. Saltando validación de imagen."
-    log_warn "Instala curl y jq para habilitar validación completa."
-    VALIDATED=true  # Continuar sin bloquear si no hay herramientas
-  fi
+if get_registry_token && check_manifest; then
+  VALIDATED=true
 fi
 
 if [[ "$VALIDATED" == "false" ]]; then
   log_error "No se pudo confirmar que la imagen exista: ${IMAGE_NAME}:${IMAGE_TAG}"
   log_error "Verifica que la imagen fue publicada correctamente en Docker Hub."
   exit 1
+fi
+
+if [[ -n "${IMAGE_VALIDATION_OUTPUT:-}" ]]; then
+  jq -n --arg image "${IMAGE_NAME}:${IMAGE_TAG}" --arg digest "$IMAGE_DIGEST" \
+    '{image: $image, imageDigest: $digest}' > "$IMAGE_VALIDATION_OUTPUT"
 fi
 
 log_ok "Validación exitosa. Imagen lista para despliegue: ${IMAGE_NAME}:${IMAGE_TAG}"
