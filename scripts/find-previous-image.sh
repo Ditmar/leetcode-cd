@@ -90,20 +90,20 @@ while IFS= read -r COMMIT; do
   CANDIDATE_REPOSITORY=$(image_repository "$CANDIDATE")
   [[ "$CANDIDATE_REPOSITORY" == "$CURRENT_REPOSITORY" ]] || continue
 
- if [[ -z "$TARGET_IMAGE" ]]; then
-  # La primera imagen válida distinta de la actual es el objetivo.
-  TARGET_IMAGE=$CANDIDATE
-  TARGET_COMMIT=$COMMIT
-  TARGET_SUBJECT=$(git log -1 --format=%s "$COMMIT" 2>/dev/null || true)
-elif [[ "$CANDIDATE" == "$TARGET_IMAGE" ]]; then
-  # Si un commit anterior conserva la misma imagen, retrocedemos
-  # para devolver el commit que introdujo esa imagen.
-  TARGET_COMMIT=$COMMIT
-  TARGET_SUBJECT=$(git log -1 --format=%s "$COMMIT" 2>/dev/null || true)
-else
-  # Encontramos una imagen anterior diferente: ya terminó el bloque.
-  break
-fi
+  if [[ -z "$TARGET_IMAGE" ]]; then
+    # La primera imagen válida distinta de la actual es el objetivo.
+    TARGET_IMAGE=$CANDIDATE
+    TARGET_COMMIT=$COMMIT
+    TARGET_SUBJECT=$(git log -1 --format=%s "$COMMIT" 2>/dev/null || true)
+  elif [[ "$CANDIDATE" == "$TARGET_IMAGE" ]]; then
+    # Si un commit anterior conserva la misma imagen, retrocedemos
+    # para devolver el commit que introdujo esa imagen.
+    TARGET_COMMIT=$COMMIT
+    TARGET_SUBJECT=$(git log -1 --format=%s "$COMMIT" 2>/dev/null || true)
+  else
+    # Encontramos una imagen anterior diferente: ya terminó el bloque.
+    break
+  fi
 done < <(git log --format=%H -n "$MAX_COMMITS" -- "$FILE")
 
 if [[ -n "$TARGET_IMAGE" && -n "$TARGET_COMMIT" ]]; then
