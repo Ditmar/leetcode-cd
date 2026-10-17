@@ -133,21 +133,31 @@ jobs:
             ./scripts/validate-image.sh "$TARGET_IMAGE"
 
       - name: Show rollback plan
+        env:
+          APP: ${{ inputs.app }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          STRATEGY: ${{ inputs.strategy }}
+          REASON: ${{ inputs.reason }}
+          ACTOR: ${{ github.actor }}
+          FROM_IMAGE: ${{ steps.current.outputs.current_image }}
+          TO_IMAGE: ${{ steps.target.outputs.image }}
+          TARGET_COMMIT: ${{ steps.resolve-git.outputs.target_commit }}
+          TARGET_SUBJECT: ${{ steps.resolve-git.outputs.target_subject }}
         run: |
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "  PLAN DE ROLLBACK"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  App:        ${{ inputs.app }}"
-          echo "  Ambiente:   ${{ inputs.environment }}"
-          echo "  Actual:     ${{ steps.current.outputs.current_image }}"
-          echo "  Rollback a: ${{ steps.target.outputs.image }}"
-          echo "  Estrategia: ${{ inputs.strategy }}"
-          echo "  Razón:      ${{ inputs.reason }}"
-          echo "  Ejecutado por: ${{ github.actor }}"
-          if [[ "${{ inputs.strategy }}" == "git-history" ]]; then
-            echo "  Commit elegido: ${{ steps.resolve-git.outputs.target_commit }}"
-            echo "  Descripción:    ${{ steps.resolve-git.outputs.target_subject }}"
+          echo "  App:        $APP"
+          echo "  Ambiente:   $ENVIRONMENT"
+          echo "  Actual:     $FROM_IMAGE"
+          echo "  Rollback a: $TO_IMAGE"
+          echo "  Estrategia: $STRATEGY"
+          echo "  Razón:      $REASON"
+          echo "  Ejecutado por: $ACTOR"
+          if [[ "$STRATEGY" == "git-history" ]]; then
+            echo "  Commit elegido: $TARGET_COMMIT"
+            echo "  Descripción:    $TARGET_SUBJECT"
           else
             echo "  Commit elegido: no aplica (manual-tag)"
           fi
@@ -189,14 +199,33 @@ jobs:
           git push
 
       - name: Summary
+        env:
+          APP: ${{ inputs.app }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          STRATEGY: ${{ inputs.strategy }}
+          REASON: ${{ inputs.reason }}
+          ACTOR: ${{ github.actor }}
+          FROM_IMAGE: ${{ steps.current.outputs.current_image }}
+          TO_IMAGE: ${{ steps.target.outputs.image }}
+          TARGET_COMMIT: ${{ steps.resolve-git.outputs.target_commit }}
+          TARGET_SUBJECT: ${{ steps.resolve-git.outputs.target_subject }}
         run: |
-          echo "## ✅ Rollback completado" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| App | ${{ inputs.app }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Ambiente | ${{ inputs.environment }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Imagen anterior | ${{ steps.current.outputs.current_image }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Imagen restaurada | ${{ steps.target.outputs.image }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Razón | ${{ inputs.reason }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Ejecutado por | ${{ github.actor }} |" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## ✅ Rollback completado"
+            echo ""
+            echo "**from \`$FROM_IMAGE\` to \`$TO_IMAGE\`**"
+            echo ""
+            echo "| Campo | Valor |"
+            echo "|-------|-------|"
+            echo "| App | $APP |"
+            echo "| Ambiente | $ENVIRONMENT |"
+            echo "| Estrategia | $STRATEGY |"
+            echo "| Imagen anterior | $FROM_IMAGE |"
+            echo "| Imagen restaurada | $TO_IMAGE |"
+            if [[ "$STRATEGY" == "git-history" ]]; then
+              echo "| Commit elegido | $TARGET_COMMIT |"
+              echo "| Descripción | $TARGET_SUBJECT |"
+            fi
+            echo "| Razón | $REASON |"
+            echo "| Ejecutado por | $ACTOR |"
+          } >> "$GITHUB_STEP_SUMMARY"
