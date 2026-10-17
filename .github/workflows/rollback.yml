@@ -164,37 +164,51 @@ jobs:
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Update environment JSON with rollback image
+        env:
+          CONFIG_FILE: ${{ steps.current.outputs.config_file }}
+          TARGET_IMAGE: ${{ steps.target.outputs.image }}
+          FROM_IMAGE: ${{ steps.current.outputs.current_image }}
+          ACTOR: ${{ github.actor }}
+          REASON: ${{ inputs.reason }}
         run: |
-          CONFIG_FILE="${{ steps.current.outputs.config_file }}"
-          TARGET_IMAGE="${{ steps.target.outputs.image }}"
           NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          NOTE="ROLLBACK desde $FROM_IMAGE → $TARGET_IMAGE. Razón: $REASON"
 
           TEMP=$(mktemp)
           jq --arg img "$TARGET_IMAGE" \
              --arg ts "$NOW" \
-             --arg by "${{ github.actor }}" \
-             --arg note "ROLLBACK desde ${{ steps.current.outputs.current_image }} → $TARGET_IMAGE. Razón: ${{ inputs.reason }}" \
+             --arg by "$ACTOR" \
+             --arg note "$NOTE" \
              '.image = $img | .deployedAt = $ts | .deployedBy = $by | .notes = $note' \
              "$CONFIG_FILE" > "$TEMP"
           mv "$TEMP" "$CONFIG_FILE"
 
       - name: Deploy rollback via deploy script
-        run: |
-          chmod +x scripts/deploy-railway.sh
-          ./scripts/deploy-railway.sh "${{ steps.current.outputs.config_file }}"
         env:
           RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+          CONFIG_FILE: ${{ steps.current.outputs.config_file }}
+        run: |
+          chmod +x scripts/deploy-railway.sh
+          ./scripts/deploy-railway.sh "$CONFIG_FILE"
 
       - name: Commit rollback state to main
+        env:
+          CONFIG_FILE: ${{ steps.current.outputs.config_file }}
+          APP: ${{ inputs.app }}
+          ENVIRONMENT: ${{ inputs.environment }}
+          ACTOR: ${{ github.actor }}
+          REASON: ${{ inputs.reason }}
+          FROM_IMAGE: ${{ steps.current.outputs.current_image }}
+          TARGET_IMAGE: ${{ steps.target.outputs.image }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${{ steps.current.outputs.config_file }}"
+          git add "$CONFIG_FILE"
           COMMIT_MSG=$(printf '%s\n\n%s\n%s\n%s' \
-            "rollback(${{ inputs.app }}/${{ inputs.environment }}): → ${{ steps.target.outputs.image }}" \
-            "Rollback ejecutado por: ${{ github.actor }}" \
-            "Razón: ${{ inputs.reason }}" \
-            "Imagen anterior: ${{ steps.current.outputs.current_image }}")
+            "rollback($APP/$ENVIRONMENT): → $TARGET_IMAGE" \
+            "Rollback ejecutado por: $ACTOR" \
+            "Razón: $REASON" \
+            "Imagen anterior: $FROM_IMAGE")
           git commit -m "$COMMIT_MSG"
           git push
 
