@@ -81,11 +81,17 @@ fi
 if [[ "${SKIP_IMAGE_VALIDATION:-false}" != "true" ]]; then
   log_step "Validando imagen Docker"
   export RAILWAY_ENVIRONMENT
+  IMAGE_VALIDATION_OUTPUT="$(mktemp)"
+  export IMAGE_VALIDATION_OUTPUT
   if ! bash "$SCRIPT_DIR/validate-image.sh" "$IMAGE"; then
     log_error "Validación de imagen falló. Despliegue abortado."
     exit 1
   fi
+  IMAGE_DIGEST=$(jq -r '.imageDigest' "$IMAGE_VALIDATION_OUTPUT")
+  rm -f "$IMAGE_VALIDATION_OUTPUT"
 else
+  # Sin validación no hay digest confirmado: se elimina el de la imagen anterior.
+  IMAGE_DIGEST=""
   log_warn "Validación de imagen omitida (SKIP_IMAGE_VALIDATION=true)"
 fi
 
@@ -179,7 +185,9 @@ TEMP_FILE=$(mktemp)
 jq --arg ts "$DEPLOYED_AT" \
    --arg by "$DEPLOYED_BY" \
    --arg sha "$COMMIT_SHA_SHORT" \
-   '.deployedAt = $ts | .deployedBy = $by | .commitSha = $sha' \
+   --arg digest "$IMAGE_DIGEST" \
+   '.deployedAt = $ts | .deployedBy = $by | .commitSha = $sha
+    | if $digest == "" then del(.imageDigest) else .imageDigest = $digest end' \
    "$CONFIG_FILE" > "$TEMP_FILE"
 mv "$TEMP_FILE" "$CONFIG_FILE"
 
