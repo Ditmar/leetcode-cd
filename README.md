@@ -2,7 +2,7 @@
 
 Repositorio de Continuous Deployment estilo GitOps para Railway + Docker Hub.
 
-> **Principio central:** El estado deseado del sistema está en este repo. Un merge a `main` *es* un despliegue.
+> **Principio central:** El estado deseado del sistema está en este repo. Un merge a `master` *es* un despliegue.
 
 ---
 
@@ -138,7 +138,7 @@ O usa el dashboard de Railway: **Project → Service → Variables → Add Varia
 
 ### Paso 10 — Verificar el primer despliegue
 
-Haz un cambio mínimo en cualquier JSON de ambiente (por ejemplo, actualiza el campo `notes`) y abre un PR hacia `main`. Al mergearlo, el workflow `deploy.yml` se disparará automáticamente.
+Haz un cambio mínimo en cualquier JSON de ambiente (por ejemplo, actualiza el campo `notes`) y abre un PR hacia `master`. Al mergearlo, el workflow `deploy.yml` se disparará automáticamente.
 
 ```bash
 # Verificar que el workflow se activó
@@ -165,7 +165,7 @@ Si el run termina en verde, el pipeline está operativo.
                                                                    │
                                                                tag versionado
                                                                    │
-┌─────────────────────┐   merge a main    ┌───────────────────────▼──┐
+┌─────────────────────┐   merge a master  ┌───────────────────────▼──┐
 │   railway-cd (este) │ ─────────────────►│      GitHub Actions       │
 │                     │                   │                          │
 │  apps/my-app/       │  deploy.yml       │  1. Detecta JSON cambiado│
@@ -190,7 +190,7 @@ Si el run termina en verde, el pipeline está operativo.
 
 | Ambiente | Propósito | Tags típicos | Auto-deploy |
 |----------|-----------|-------------|-------------|
-| `dev` | Integración continua, pruebas de features | `1.x.x-beta.N` | Sí (merge a main) |
+| `dev` | Integración continua, pruebas de features | `1.x.x-beta.N` | Sí (merge a master) |
 | `qa` | Testing funcional, sign-off de QA | `1.x.x-rc.N` | Vía PR de promoción |
 | `ppd` | Smoke test en infraestructura de producción | `1.x.x` | Vía PR + aprobación |
 | `prod` | Producción real | `1.x.x` | Vía PR + aprobación requerida |
@@ -333,7 +333,8 @@ Cada archivo JSON describe el estado deseado del despliegue:
 ```
 
 **Reglas:**
-- `image` nunca debe ser `latest` en `ppd` o `prod`
+- `image` nunca debe ser `latest` en ningún ambiente
+- `prod` solo admite versiones estables; `ppd` admite prereleases `rc`
 - Solo cambiar `image` (y opcionalmente `notes`) en PRs de deployment
 - Los campos `deployedAt`, `deployedBy`, `commitSha` son actualizados automáticamente por el workflow
 
@@ -353,7 +354,7 @@ git checkout -b deploy/my-app-dev-1.0.4-beta.1
 git add apps/my-app/dev.json
 git commit -m "deploy(my-app/dev): → 1.0.4-beta.1"
 git push origin HEAD
-gh pr create --title "deploy(my-app/dev): → 1.0.4-beta.1" --base main
+gh pr create --title "deploy(my-app/dev): → 1.0.4-beta.1" --base master
 ```
 
 ### Opción B — Desde el App Repository (automatizado)
@@ -401,12 +402,12 @@ git diff apps/my-app/ppd.json
 # Crear PR
 git add apps/my-app/ppd.json
 git commit -m "promote(my-app): qa → ppd — dockerhub-user/my-app:1.0.3-rc.1"
-gh pr create --base main
+gh pr create --base master
 ```
 
 **Restricciones del script de promoción:**
 - Solo permite avanzar en la cadena: `dev → qa → ppd → prod`
-- Bloquea el tag `latest` hacia `ppd` y `prod`
+- El workflow de checks y `validate-image.sh` bloquean `latest` en todos los ambientes
 - No permite saltar ambientes (ej: dev directamente a prod)
 
 ---
@@ -511,7 +512,7 @@ El tag `latest` es una referencia mutable — apunta a "la última imagen" y cam
 | ppd | `MAYOR.MENOR.PATCH` | `1.2.0` |
 | prod | `MAYOR.MENOR.PATCH` | `1.2.0` |
 
-El script `validate-image.sh` bloquea activamente el uso de `latest` en `ppd` y `prod`.
+Los checks de Pull Request y `validate-image.sh` bloquean el uso de `latest` en todos los ambientes.
 
 ---
 
@@ -523,13 +524,13 @@ Configura en tu repo GitHub → Settings → Environments:
 ```
 Required reviewers: [lead-engineer, tech-lead]
 Wait timer: 5 minutes   ← tiempo para cancelar si se detecta algo
-Deployment branches: main only
+Deployment branches: master only
 ```
 
 ### `ppd` environment
 ```
 Required reviewers: [qa-lead, dev-lead]
-Deployment branches: main only
+Deployment branches: master only
 ```
 
 ### `dev` y `qa`
@@ -630,3 +631,91 @@ git diff HEAD~1 HEAD -- apps/my-app/prod.json
 - Los tokens de Railway se rotan en GitHub Secrets cuando expiran
 - Este README se actualiza cuando se agrega una nueva app o se cambia el flujo
 - Los archivos `variables.example.env` se actualizan cuando se agrega/elimina una variable de la app
+
+## Checks automáticos de Pull Requests (CD-009)
+
+`.github/workflows/pr-checks.yml` ejecuta checks al abrir, actualizar o reabrir
+cualquier Pull Request, sin filtrar por rama destino. El workflow solo tiene
+permiso `contents: read`: no consume secretos, no despliega y no escribe en el
+repositorio.
+
+Los checks estables que pueden exigirse antes de fusionar son:
+
+| Check requerido | Responsabilidad |
+|-----------------|-----------------|
+| `Validate deployment configs` | Esquema JSON, compatibilidad heredada, comparación de infraestructura y verificación de imágenes modificadas |
+| `ShellCheck` | Análisis estático de los scripts Bash |
+| `Actionlint` | Análisis de todos los workflows de GitHub Actions |
+
+### Política de configuración e infraestructura
+
+- Los ambientes permitidos son `dev`, `qa`, `ppd` y `prod`; el valor Railway
+  correspondiente a `prod` es `production`.
+- El esquema acepta únicamente sus campos conocidos. `imageDigest` es
+  opcional y, si está presente, debe usar `sha256:` seguido de 64 dígitos
+  hexadecimales minúsculos. Se valida su forma, no que corresponda al
+  manifiesto de la referencia etiquetada `image`.
+- La configuración previa de `apps/leetcode-spa/dev.json`,
+  `qa.json` y `ppd.json` puede conservar sus valores heredados exactos de
+  `app` y los tres Railway IDs placeholder. Solo se toleran cuando están
+  presentes, idénticos y en esos archivos concretos tanto en la rama base como
+  en el PR. No se acepta un nuevo placeholder ni cualquier valor que termine
+  en `_HERE`. El `app: my-app` heredado se restringe del mismo modo. Esos
+  valores deben reemplazarse posteriormente mediante un cambio de
+  infraestructura aprobado.
+- En configuraciones existentes solo pueden cambiar `image`, `notes`,
+  `deployedAt`, `deployedBy` y `commitSha`. `imageDigest` y las demás
+  propiedades son protegidos; los objetos se comparan semánticamente con
+  `jq`, por lo que formato e indentación no generan falsos positivos.
+- Agregar o eliminar archivos de configuración también falla. No existe una
+  etiqueta ni otra excepción automática para permitir cambios de
+  infraestructura o de esquema.
+
+### Política de imágenes
+
+Las referencias nuevas o modificadas deben ser `owner/name:X.Y.Z` con versión
+SemVer explícita; no se admite `latest`. `dev` y `qa` aceptan prereleases
+SemVer, `ppd` acepta versiones estables y prereleases `rc`, y `prod` solo
+versiones estables. El workflow consulta los tags de Docker Hub sin descargar
+capas. Solo HTTP 200 es éxito; errores de red, autenticación, 404, 5xx,
+respuestas inesperadas o herramientas faltantes hacen fallar el check. Para
+mantener seguro el evento `pull_request`, la verificación es anónima: las
+imágenes privadas no pueden verificarse con secretos del repositorio y fallan
+cerrado.
+
+La imagen heredada solo evita la consulta externa si el valor es idéntico al
+de la rama base. Su sintaxis y política de versión se siguen comprobando.
+
+### Hacer obligatorios los checks
+
+Un administrador del repositorio debe configurar en GitHub **Settings →
+Branches** (protección de rama) o **Settings → Rules → Rulesets**:
+
+1. Seleccionar la rama de integración oficial y exigir Pull Requests antes de
+   fusionar.
+2. Activar la exigencia de checks/status checks y agregar exactamente:
+   `Validate deployment configs`, `ShellCheck` y `Actionlint`.
+3. Guardar la regla y verificar que los tres checks aparecen en una PR.
+
+El workflow se ejecuta para cualquier rama destino, pero la protección se
+configura por rama. Hoy `master` es la rama por defecto y el destino usado por
+los workflows operativos; confirmar con el equipo si también debe protegerse
+`feature/release` u otra rama. Si solo el docente tiene permisos
+administrativos, un mantenedor debe enviarle estos tres nombres de checks y
+solicitar que aplique la regla; esta implementación no cambia ajustes remotos.
+
+### Herramientas y compatibilidad de CD-005
+
+Los validadores usan `jq`, `curl`, Bash y `date` del runner Ubuntu 24.04.
+ShellCheck v0.10.0 y Actionlint v1.7.7 se descargan desde sus releases
+oficiales y se verifican con SHA-256 fijados. Los workflows operativos se
+fijaron a `ubuntu-24.04`; `actions/checkout` usa el commit verificado
+`11bd71901bbe5b1630ceea73d27597364c9af683` (v4.2.2). Se eliminaron
+instalaciones redundantes de jq/curl porque ya están disponibles en el runner.
+
+CD-005 debe confirmar la semántica y el vínculo entre `imageDigest` y
+`image` antes de añadir funcionalidad por digest. Esta validación no sustituye
+ni modifica la validación de imágenes de CD-005: actualmente solo se verifica
+la existencia de la etiqueta Docker Hub cuando cambia `image`, y el campo
+`imageDigest` permanece opcional, sintácticamente validado y protegido contra
+cambios ordinarios.
