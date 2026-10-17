@@ -65,6 +65,9 @@ image_repository() {
 
 CURRENT_REPOSITORY=$(image_repository "$CURRENT_IMAGE")
 COUNT=0
+TARGET_IMAGE=""
+TARGET_COMMIT=""
+TARGET_SUBJECT=""
 
 while IFS= read -r COMMIT; do
   [[ -n "$COMMIT" ]] || continue
@@ -80,18 +83,35 @@ while IFS= read -r COMMIT; do
     continue
   }
 
+  # Ignorar commits que conservan la imagen actual.
   [[ "$CANDIDATE" != "$CURRENT_IMAGE" ]] || continue
 
+  # Solo aceptar imágenes del mismo repositorio Docker.
   CANDIDATE_REPOSITORY=$(image_repository "$CANDIDATE")
   [[ "$CANDIDATE_REPOSITORY" == "$CURRENT_REPOSITORY" ]] || continue
 
-  SUBJECT=$(git log -1 --format=%s "$COMMIT" 2>/dev/null) || SUBJECT=""
-
-  printf 'image=%s\n' "$CANDIDATE"
-  printf 'commit=%s\n' "$COMMIT"
-  printf 'subject=%s\n' "$SUBJECT"
-  exit 0
+ if [[ -z "$TARGET_IMAGE" ]]; then
+  # La primera imagen válida distinta de la actual es el objetivo.
+  TARGET_IMAGE=$CANDIDATE
+  TARGET_COMMIT=$COMMIT
+  TARGET_SUBJECT=$(git log -1 --format=%s "$COMMIT" 2>/dev/null || true)
+elif [[ "$CANDIDATE" == "$TARGET_IMAGE" ]]; then
+  # Si un commit anterior conserva la misma imagen, retrocedemos
+  # para devolver el commit que introdujo esa imagen.
+  TARGET_COMMIT=$COMMIT
+  TARGET_SUBJECT=$(git log -1 --format=%s "$COMMIT" 2>/dev/null || true)
+else
+  # Encontramos una imagen anterior diferente: ya terminó el bloque.
+  break
+fi
 done < <(git log --format=%H -n "$MAX_COMMITS" -- "$FILE")
+
+if [[ -n "$TARGET_IMAGE" && -n "$TARGET_COMMIT" ]]; then
+  printf 'image=%s\n' "$TARGET_IMAGE"
+  printf 'commit=%s\n' "$TARGET_COMMIT"
+  printf 'subject=%s\n' "$TARGET_SUBJECT"
+  exit 0
+fi
 
 echo "Error: no se encontró una imagen anterior distinta de '$CURRENT_IMAGE' en los $COUNT commits examinados." >&2
 exit 2

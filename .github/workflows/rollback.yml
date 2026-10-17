@@ -81,14 +81,23 @@ jobs:
           fi
 
           PREV_IMAGE=$(printf '%s\n' "$RESULT" | sed -n 's/^image=//p' | head -n 1)
+          PREV_COMMIT=$(printf '%s\n' "$RESULT" | sed -n 's/^commit=//p' | head -n 1)
+          PREV_SUBJECT=$(printf '%s\n' "$RESULT" | sed -n 's/^subject=//p' | head -n 1)
 
-          if [[ -z "$PREV_IMAGE" ]]; then
-            echo "::error::El script no devolvió una imagen anterior válida."
+          if [[ -z "$PREV_IMAGE" || -z "$PREV_COMMIT" ]]; then
+            echo "::error::El script no devolvió la imagen anterior y su commit."
             exit 1
           fi
 
-          echo "target_image=$PREV_IMAGE" >> "$GITHUB_OUTPUT"
+          {
+            echo "target_image=$PREV_IMAGE"
+            echo "target_commit=$PREV_COMMIT"
+            echo "target_subject=$PREV_SUBJECT"
+          } >> "$GITHUB_OUTPUT"
+
           echo "Imagen anterior encontrada: $PREV_IMAGE"
+          echo "Commit seleccionado: $PREV_COMMIT"
+          echo "Descripción del commit: $PREV_SUBJECT"
 
       - name: Determine rollback target (manual-tag)
         id: resolve-manual
@@ -136,6 +145,12 @@ jobs:
           echo "  Estrategia: ${{ inputs.strategy }}"
           echo "  Razón:      ${{ inputs.reason }}"
           echo "  Ejecutado por: ${{ github.actor }}"
+          if [[ "${{ inputs.strategy }}" == "git-history" ]]; then
+            echo "  Commit elegido: ${{ steps.resolve-git.outputs.target_commit }}"
+            echo "  Descripción:    ${{ steps.resolve-git.outputs.target_subject }}"
+          else
+            echo "  Commit elegido: no aplica (manual-tag)"
+          fi
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
       - name: Update environment JSON with rollback image
