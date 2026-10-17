@@ -140,7 +140,7 @@ jobs:
         run: |
           chmod +x scripts/validate-image.sh
           IMAGE=$(jq -r '.image' "${{ matrix.config_file }}")
-          RAILWAY_ENVIRONMENT="${{ matrix.environment }}" \
+          TARGET_ENV="$(jq -r '.environment' "${{ matrix.config_file }}")" \
             ./scripts/validate-image.sh "$IMAGE"
 
       - name: Deploy to Railway

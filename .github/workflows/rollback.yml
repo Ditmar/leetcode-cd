@@ -115,7 +115,7 @@ jobs:
         run: |
           chmod +x scripts/validate-image.sh
           TARGET_IMAGE="${{ steps.target.outputs.image }}"
-          RAILWAY_ENVIRONMENT="${{ inputs.environment }}" \
+          TARGET_ENV="${{ inputs.environment }}" \
             ./scripts/validate-image.sh "$TARGET_IMAGE"
 
       - name: Show rollback plan

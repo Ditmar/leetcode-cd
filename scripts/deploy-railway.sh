@@ -7,7 +7,7 @@
 #   RAILWAY_API_TOKEN  — API token de Railway (GitHub Secret)
 #
 # Variables opcionales:
-#   SKIP_IMAGE_VALIDATION=true  — Omitir validación de imagen (no recomendado)
+#   SKIP_IMAGE_VALIDATION=true  — Omitir validación fuera de prod/ppd (no recomendado)
 #   DRY_RUN=true                — Simular despliegue sin ejecutar
 
 set -euo pipefail
@@ -78,10 +78,10 @@ if [[ -z "${RAILWAY_API_TOKEN:-}" ]]; then
 fi
 
 # ── Validar imagen Docker antes de desplegar ─────────────────────────────────
-if [[ "${SKIP_IMAGE_VALIDATION:-false}" != "true" ]]; then
+if [[ "${SKIP_IMAGE_VALIDATION:-false}" != "true" || "$ENVIRONMENT" == "prod" || "$ENVIRONMENT" == "ppd" ]]; then
   log_step "Validando imagen Docker"
   export RAILWAY_ENVIRONMENT
-  if ! bash "$SCRIPT_DIR/validate-image.sh" "$IMAGE"; then
+  if ! TARGET_ENV="$ENVIRONMENT" bash "$SCRIPT_DIR/validate-image.sh" "$IMAGE"; then
     log_error "Validación de imagen falló. Despliegue abortado."
     exit 1
   fi
