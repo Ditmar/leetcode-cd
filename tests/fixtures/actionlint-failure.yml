@@ -1,0 +1,6 @@
+name: Invalid fixture
+on: pull_request
+jobs:
+  invalid:
+    steps:
+      - run: echo "missing runs-on"
