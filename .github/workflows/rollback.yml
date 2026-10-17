@@ -139,7 +139,7 @@ jobs:
         run: |
           chmod +x scripts/validate-image.sh
           TARGET_IMAGE="$ROLLBACK_TARGET_IMAGE"
-          RAILWAY_ENVIRONMENT="$TARGET_ENVIRONMENT" \
+          TARGET_ENV="$TARGET_ENVIRONMENT" \
             ./scripts/validate-image.sh "$TARGET_IMAGE"
         env:
           ROLLBACK_TARGET_IMAGE: ${{ steps.target.outputs.image }}
