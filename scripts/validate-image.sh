@@ -2,7 +2,8 @@
 # validate-image.sh — Verifica que una imagen Docker exista en Docker Hub antes de desplegar.
 # Uso: ./validate-image.sh <image:tag>
 # Ejemplo: ./validate-image.sh dockerhub-user/my-app:1.0.3
-# TARGET_ENV: ambiente lógico (prod/ppd), independiente del nombre en Railway.
+# TARGET_ENV: dev/qa/ppd/prod. RAILWAY_ENVIRONMENT puede aportar el contexto
+# si TARGET_ENV está ausente; si ambos están presentes, deben ser compatibles.
 
 set -euo pipefail
 
@@ -26,6 +27,9 @@ if [[ $# -lt 1 ]]; then
 fi
 
 FULL_IMAGE="$1"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/environment-policy.sh"
+EFFECTIVE_TARGET_ENV=$(resolve_target_env "${TARGET_ENV:-}" "${RAILWAY_ENVIRONMENT:-}") || exit 1
 
 # ── Parsear imagen y tag ─────────────────────────────────────────────────────
 if [[ "${FULL_IMAGE##*/}" == *":"* ]]; then
@@ -41,15 +45,15 @@ log_info "Validando imagen: ${IMAGE_NAME}:${IMAGE_TAG}"
 
 # ── Validar tags antes de consultar Docker o Railway ──────────────────────
 VERSION_PATTERN='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
-case "${TARGET_ENV:-}" in
+case "$EFFECTIVE_TARGET_ENV" in
   prod) TAG_PATTERN="^${VERSION_PATTERN}$" ;;
   ppd)  TAG_PATTERN="^${VERSION_PATTERN}(-rc\.(0|[1-9][0-9]*))?$" ;;
-  *)    TAG_PATTERN="" ;;
+  dev|qa) TAG_PATTERN="" ;;
 esac
 
 if [[ -n "$TAG_PATTERN" ]]; then
   if [[ -z "$IMAGE_NAME" || "$FULL_IMAGE" == *@* || ! "$IMAGE_TAG" =~ $TAG_PATTERN ]]; then
-    log_error "Tag inválido en ambiente '$TARGET_ENV': '$IMAGE_TAG'."
+    log_error "Tag inválido en ambiente '$EFFECTIVE_TARGET_ENV': '$IMAGE_TAG'."
     log_error "prod requiere X.Y.Z; ppd permite X.Y.Z o X.Y.Z-rc.N."
     exit 1
   fi

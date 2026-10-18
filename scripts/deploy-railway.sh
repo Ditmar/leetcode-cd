@@ -24,6 +24,7 @@ log_step()  { echo -e "\n${BOLD}▶ $*${NC}"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+source "$SCRIPT_DIR/environment-policy.sh"
 
 # ── Validar argumentos ───────────────────────────────────────────────────────
 if [[ $# -lt 1 ]]; then
@@ -70,6 +71,13 @@ log_info "Imagen:      $IMAGE"
 log_info "Proyecto:    $RAILWAY_PROJECT ($RAILWAY_PROJECT_ID)"
 log_info "Servicio:    $RAILWAY_SERVICE ($RAILWAY_SERVICE_ID)"
 
+# Comprobar el destino incluso si se omite la validación de imagen.
+if [[ -z "$ENVIRONMENT" || -z "$RAILWAY_ENVIRONMENT" ]]; then
+  log_error "Entorno inválido: environment y railwayEnvironment son obligatorios."
+  exit 1
+fi
+TARGET_ENV=$(resolve_target_env "$ENVIRONMENT" "$RAILWAY_ENVIRONMENT") || exit 1
+
 # ── Validar variables de entorno requeridas ──────────────────────────────────
 if [[ -z "${RAILWAY_API_TOKEN:-}" ]]; then
   log_error "Variable RAILWAY_API_TOKEN no definida."
@@ -78,10 +86,10 @@ if [[ -z "${RAILWAY_API_TOKEN:-}" ]]; then
 fi
 
 # ── Validar imagen Docker antes de desplegar ─────────────────────────────────
-if [[ "${SKIP_IMAGE_VALIDATION:-false}" != "true" || "$ENVIRONMENT" == "prod" || "$ENVIRONMENT" == "ppd" ]]; then
+if [[ "${SKIP_IMAGE_VALIDATION:-false}" != "true" || "$TARGET_ENV" == "prod" || "$TARGET_ENV" == "ppd" ]]; then
   log_step "Validando imagen Docker"
   export RAILWAY_ENVIRONMENT
-  if ! TARGET_ENV="$ENVIRONMENT" bash "$SCRIPT_DIR/validate-image.sh" "$IMAGE"; then
+  if ! TARGET_ENV="$TARGET_ENV" bash "$SCRIPT_DIR/validate-image.sh" "$IMAGE"; then
     log_error "Validación de imagen falló. Despliegue abortado."
     exit 1
   fi
