@@ -139,10 +139,12 @@ jobs:
         run: |
           chmod +x scripts/validate-image.sh
           TARGET_IMAGE="$ROLLBACK_TARGET_IMAGE"
-          TARGET_ENV="$TARGET_ENVIRONMENT" \
+          TARGET_ENV="$(jq -r '.environment' "$CURRENT_CONFIG_FILE")" \
+          RAILWAY_ENVIRONMENT="$(jq -r '.railwayEnvironment' "$CURRENT_CONFIG_FILE")" \
             ./scripts/validate-image.sh "$TARGET_IMAGE"
         env:
           ROLLBACK_TARGET_IMAGE: ${{ steps.target.outputs.image }}
+          CURRENT_CONFIG_FILE: ${{ steps.current.outputs.config_file }}
 
       - name: Show rollback plan
         run: |
