@@ -139,12 +139,13 @@ done
         │
         ▼
 3. leetcode-cd: edit apps/api-leetcode/ppd.json → "image": "...:0.2.0"
-   open PR → merge to master → deploy.yml deploys to PPD
+   open PR → merge to master → deploy.yml requests the deploy to PPD
         │
-        ▼  [smoke tests OK in ppd]
+        ▼  [verify in Railway + smoke test OK in ppd]
 4. Run promote.yml (ppd → prod)
    → opens PR with prod.json updated
-   review PR → merge → deploy.yml deploys to PROD ✅
+   review PR → merge → deploy.yml requests the deploy to PROD
+   → verify in Railway again
 ```
 
 Step 2 and the edit in step 3 are **manual today**: the app repositories do not update this repo automatically (planned work, ticket CD-008).
@@ -166,16 +167,18 @@ Triggers:
 
 1. Shows the deployment plan
 2. Validates the Docker image (`validate-image.sh`)
-3. Deploys to Railway (`deploy-railway.sh`)
+3. Requests the deploy to Railway (`deploy-railway.sh`)
 4. Commits the updated metadata to `master` (`[skip ci]`), with up to 5 push retries using `git rebase`
 
 All matrix entries share one `concurrency` group, so they never push to `master` at the same time.
+
+> **A green run = deploy request sent, not app running.** The workflow does not wait for the build or run a health check.
 
 ---
 
 ## Slide 8: What does deploy-railway.sh do?
 
-Usage: `./scripts/deploy-railway.sh apps/<app>/<env>.json`
+Usage: `bash scripts/deploy-railway.sh apps/<app>/<env>.json`
 
 ### Step 1: Read the environment JSON
 
@@ -200,6 +203,8 @@ serviceInstanceDeploy → triggers the deploy
 
 Writes `deployedAt`, `deployedBy` and `commitSha` to the file. The **workflow** (not the script) commits it to `master`.
 
+The script requests the deploy and finishes: it does not wait for the final status.
+
 Needs `RAILWAY_API_TOKEN`. Optional: `DRY_RUN=true`, `SKIP_IMAGE_VALIDATION=true`.
 
 ---
@@ -221,17 +226,18 @@ The only valid promotion is `ppd → prod`. There are two ways:
 ### promote.sh (local)
 
 ```bash
-./scripts/promote.sh api-leetcode ppd prod
+bash scripts/promote.sh api-leetcode ppd prod
 ```
 
 Only edits `prod.json` locally and shows a diff. **You** commit and open the PR.
 
-### Built-in protections
+### Protections
 
-- No environment jumps, only `ppd → prod`
-- `latest` is blocked
-- Does nothing if `prod` already runs the same image
-- The script asks for confirmation (or `AUTO_CONFIRM=true`)
+- No environment jumps, only `ppd → prod` (script and workflow)
+- `latest` is blocked (script and workflow)
+- **Only `promote.sh`:** stops without changes if `prod` already runs the same image, and asks for confirmation (or `AUTO_CONFIRM=true`)
+- **`promote.yml` does not check for the same image:** it still rewrites `deployedAt` / `notes`, opens a PR, and merging it redeploys the same image. Compare first:
+  `jq -r '.image' apps/<app>/ppd.json apps/<app>/prod.json`
 
 ---
 
@@ -266,10 +272,10 @@ Format: `MAJOR.MINOR.PATCH`. Blocked by `validate-image.sh`, `promote.sh` and `p
 
 ### Secrets used by the workflows
 
-| Secret              | Used by                     | Purpose                                          |
-| ------------------- | --------------------------- | ------------------------------------------------ |
-| `RAILWAY_API_TOKEN` | `deploy.yml`                | Authenticates calls to the Railway API           |
-| `GITHUB_TOKEN`      | `deploy.yml`, `promote.yml` | Automatic: pushes metadata commits and opens PRs |
+| Secret              | Used by                                     | Purpose                                                           |
+| ------------------- | ------------------------------------------- | ----------------------------------------------------------------- |
+| `RAILWAY_API_TOKEN` | `deploy.yml`, `rollback.yml`                | Authenticates calls to the Railway API                            |
+| `GITHUB_TOKEN`      | `deploy.yml`, `promote.yml`, `rollback.yml` | Automatic: checkout, metadata and rollback commits, promotion PRs |
 
 ### Docker Hub credentials
 
@@ -291,6 +297,16 @@ gh pr create --base master
 ```
 
 Merge the PR, then watch the **Deploy to Railway** run in the Actions tab.
+
+### Verify before promoting
+
+A green run only means Railway accepted the request. Then:
+
+1. Railway Dashboard → project `leetcode` → environment → service → **Deployments**: latest one finished and active, logs clean
+2. The deployed image is the tag you expect
+3. Smoke test: open the SPA URL or call a known API endpoint
+
+Do not promote until these pass.
 
 ### Option B: Manual run
 
@@ -317,7 +333,7 @@ It redeploys whatever image the file has right now.
 | `target_tag`  | Tag to restore, e.g. `0.1.0` (only `manual-tag`)     |
 | `reason`      | Required, saved in the commit message and in `notes` |
 
-Steps: resolve target image → validate it on Docker Hub → update the JSON → `deploy-railway.sh` → **commit directly to `master`**.
+Steps: resolve target image → validate it on Docker Hub → update the JSON → `deploy-railway.sh` (requests the deploy) → **commit directly to `master`**. Verify in Railway afterwards.
 
 - `manual-tag`: same image name, new tag. Reliable.
 - `git-history`: takes the 2nd latest commit that touched the file. Metadata commits also touch it, so it can pick the image that is already running. Read the "Rollback plan" step first.
@@ -341,16 +357,18 @@ Merging the PR triggers `deploy.yml`.
 
 ## Slide 14: Reference commands
 
+**Requirements:** Bash 4+ (macOS ships 3.2: `brew install bash`), `jq`, `curl`, `git`, and `gh` authenticated (`gh auth login`) for the examples that open a PR. The scripts are not executable in git (mode 100644), so run them with `bash`.
+
 ```bash
 # See which version is deployed in each environment
 jq -r '.image' apps/api-leetcode/ppd.json apps/api-leetcode/prod.json
 
 # Check that an image exists before opening the PR
-./scripts/validate-image.sh ditmar/api-leetcode:0.2.0
+bash scripts/validate-image.sh ditmar/api-leetcode:0.2.0
 
 # Simulate a deploy without running it (dry run)
 DRY_RUN=true RAILWAY_API_TOKEN=dummy \
-  ./scripts/deploy-railway.sh apps/api-leetcode/ppd.json
+  bash scripts/deploy-railway.sh apps/api-leetcode/ppd.json
 
 # Deploy history of an environment
 git log --oneline -- apps/api-leetcode/prod.json
@@ -359,7 +377,7 @@ git log --oneline -- apps/api-leetcode/prod.json
 git diff HEAD~1 HEAD -- apps/api-leetcode/prod.json
 
 # Promote ppd to prod from your machine
-AUTO_CONFIRM=true ./scripts/promote.sh leetcode-spa ppd prod
+AUTO_CONFIRM=true bash scripts/promote.sh leetcode-spa ppd prod
 ```
 
 ---
@@ -382,7 +400,8 @@ AUTO_CONFIRM=true ./scripts/promote.sh leetcode-spa ppd prod
 | **`git-history` is unreliable** | It can restore the image that is already running; prefer `manual-tag`                                       |
 | **Deploy first, commit later**  | If the push of `rollback.yml` fails, Railway and git disagree                                               |
 | **Validation can fail open**    | `validate-image.sh` continues if Docker Hub answers with an unexpected status or if `curl`/`jq` are missing |
-| **No wait for the result**      | `deploy-railway.sh` triggers the Railway deploy and finishes; it does not check that it succeeded           |
+| **No wait for the result**      | `deploy-railway.sh` requests the Railway deploy and finishes; no status wait, no health check               |
+| **`promote.yml` never skips**   | With the same image in `ppd` and `prod` it still opens a PR (only `promote.sh` skips)                       |
 | **Private images**              | Docker Hub credentials are not passed to the validation step                                                |
 
 ---
