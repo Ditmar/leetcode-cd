@@ -1,417 +1,423 @@
-# Sistema de Continuous Deployment — railway-cd
-### GitOps con Railway + Docker Hub + GitHub Actions
+# Continuous Deployment System: leetcode-cd
+
+### GitOps with Railway + Docker Hub + GitHub Actions
 
 ---
 
-## Diapositiva 1 — ¿Qué es este sistema?
+## Slide 1: What is this system?
 
-**railway-cd** es un repositorio de Continuous Deployment estilo **GitOps**.
+**leetcode-cd** is a **GitOps** continuous deployment repository for two apps: `api-leetcode` (backend) and `leetcode-spa` (frontend).
 
-> **Principio central:** El estado deseado del sistema vive en este repo.
-> Un merge a `main` **es** un despliegue.
+> **Core principle:** the desired state of each environment lives in this repo.
+> A merge to `master` that changes an environment file **is** a deployment.
 
-### Herramientas involucradas
+### Tools involved
 
-| Herramienta | Rol |
-|---|---|
-| **GitHub** | Repositorio de estado + control de aprobaciones |
-| **GitHub Actions** | Motor de automatización (CI/CD) |
-| **Docker Hub** | Registro de imágenes Docker |
-| **Railway** | Plataforma de hosting donde corren los servicios |
-
----
-
-## Diapositiva 2 — Arquitectura general
-
-```
-┌─────────────────────┐    CI builds image    ┌─────────────────────┐
-│   App Repository    │ ─────────────────────►│     Docker Hub      │
-│  src/ + Dockerfile  │   push tag versionado │  my-app:1.0.3-rc.1  │
-└─────────────────────┘                       └──────────┬──────────┘
-                                                         │ imagen disponible
-┌─────────────────────┐   merge a main        ┌──────────▼──────────┐
-│   railway-cd (este) │ ─────────────────────►│   GitHub Actions    │
-│  apps/my-app/*.json │   editar JSON + PR    │  1. Lee JSON        │
-│                     │                       │  2. Valida imagen   │
-└─────────────────────┘                       │  3. Llama Railway   │
-                                              │  4. Actualiza meta  │
-                                              └──────────┬──────────┘
-                                                         │ Railway API
-                                              ┌──────────▼──────────┐
-                                              │       Railway        │
-                                              │  dev  → :1.0.3b1    │
-                                              │  qa   → :1.0.3rc1   │
-                                              │  ppd  → :1.0.3      │
-                                              │  prod → :1.0.2      │
-                                              └─────────────────────┘
-```
+| Tool               | Role                                    |
+| ------------------ | --------------------------------------- |
+| **GitHub**         | State repository and approval control   |
+| **GitHub Actions** | Automation engine                       |
+| **Docker Hub**     | Docker image registry                   |
+| **Railway**        | Hosting platform where the services run |
 
 ---
 
-## Diapositiva 3 — Estructura del repositorio
+## Slide 2: Architecture
 
 ```
-railway-cd/
+┌─────────────────────┐   build + push image   ┌─────────────────────┐
+│  App repositories   │ ─────────────────────► │      Docker Hub     │
+│ api-leetcode        │   versioned tag        │ ditmar/api-leetcode │
+│ leetcode-spa        │   (e.g. 0.2.0)         │ ditmar/leetcode-spa │
+└─────────────────────┘                        └──────────┬──────────┘
+                                                          │ image available
+┌─────────────────────┐   PR + merge to master ┌──────────▼──────────┐
+│ leetcode-cd (this)  │ ─────────────────────► │   GitHub Actions    │
+│ apps/<app>/ppd.json │   edit `image` field   │  1. Detect changes  │
+│ apps/<app>/prod.json│   (manual today)       │  2. Validate image  │
+└─────────────────────┘                        │  3. Call Railway    │
+                                               │  4. Commit metadata │
+                                               └──────────┬──────────┘
+                                                          │ Railway API
+                                               ┌──────────▼──────────┐
+                                               │       Railway       │
+                                               │  project: leetcode  │
+                                               │  ppd  → image:tag   │
+                                               │  prod → image:tag   │
+                                               └─────────────────────┘
+```
+
+---
+
+## Slide 3: Repository structure
+
+```
+leetcode-cd/
 ├── apps/
-│   └── my-app/
-│       ├── dev.json              ← Estado desplegado en dev
-│       ├── qa.json               ← Estado desplegado en qa
-│       ├── ppd.json              ← Estado desplegado en ppd
-│       ├── prod.json             ← Estado desplegado en prod
-│       └── variables.example.env ← Template de variables (sin secretos)
+│   ├── api-leetcode/
+│   │   ├── ppd.json              ← State deployed in ppd
+│   │   └── prod.json             ← State deployed in prod
+│   └── leetcode-spa/
+│       ├── ppd.json
+│       └── prod.json
 │
 ├── scripts/
-│   ├── deploy-railway.sh         ← Despliega en Railway leyendo el JSON
-│   ├── validate-image.sh         ← Valida que la imagen Docker exista
-│   └── promote.sh                ← Prepara una promoción de ambiente
+│   ├── deploy-railway.sh         ← Updates the image in Railway and triggers the deploy
+│   ├── validate-image.sh         ← Checks that the Docker image exists
+│   └── promote.sh                ← Local helper to promote ppd → prod
 │
 └── .github/workflows/
-    ├── deploy.yml                ← Trigger automático al mergear
-    ├── promote.yml               ← Workflow manual de promoción
-    └── rollback.yml              ← Rollback a versión anterior
+    ├── deploy.yml                ← Runs when ppd.json / prod.json change on master
+    ├── promote.yml               ← Manual promotion workflow (opens a PR)
+    └── rollback.yml              ← Manual rollback (commits directly to master)
 ```
 
-**Cada app tiene su propia carpeta.** Para agregar un nuevo servicio basta con crear `apps/nuevo-servicio/` con sus 4 JSONs.
+**Each app has its own folder.** Branch: `master`. Environments: `ppd` and `prod` only.
 
 ---
 
-## Diapositiva 4 — El archivo de estado (JSON por ambiente)
+## Slide 4: The state file (one JSON per environment)
 
-Cada archivo JSON describe **exactamente** qué está desplegado en ese ambiente:
+Each file describes **exactly** what is deployed in that environment:
 
 ```json
 {
-  "app": "my-app",
-  "environment": "prod",
-  "image": "dockerhub-user/my-app:1.0.2",
-  "railwayProject": "my-app-project",
-  "railwayProjectId": "xxxx-xxxx-xxxx",
-  "railwayEnvironmentId": "xxxx-xxxx-xxxx",
-  "railwayServiceId": "xxxx-xxxx-xxxx",
-  "deployedAt": "2026-05-20T12:00:00Z",
-  "deployedBy": "jane.doe",
-  "commitSha": "jkl3456",
-  "notes": "Stable release — approved by product team"
+  "app": "api-leetcode",
+  "environment": "ppd",
+  "image": "ditmar/api-leetcode:0.1.0",
+  "railwayProject": "leetcode",
+  "railwayProjectId": "...",
+  "railwayEnvironment": "ppd",
+  "railwayEnvironmentId": "...",
+  "railwayService": "api-leetcode",
+  "railwayServiceId": "...",
+  "deployedAt": "2026-06-30T22:30:00Z",
+  "deployedBy": "PCilverio",
+  "commitSha": "pending",
+  "notes": "Initial pre-production slot setup for API service deployment"
 }
 ```
 
-### Reglas clave
-- Solo se cambia el campo `image` (y opcionalmente `notes`) al hacer un deploy
-- `deployedAt`, `deployedBy` y `commitSha` los actualiza **automáticamente** el workflow
-- El archivo en git **es** la fuente de verdad — si quieres saber qué hay en prod, lees `prod.json`
+### Key rules
+
+- By hand, you only change `image` (and optionally `notes`).
+- `deployedAt`, `deployedBy` and `commitSha` are updated **automatically** by the pipeline.
+- `commitSha` is the commit of **this repo** that triggered the deploy, not the app's source commit. `pending` means it was never deployed by the pipeline.
+- The file in git is the source of truth: to know what runs in prod, read `prod.json`.
 
 ---
 
-## Diapositiva 5 — Los 4 ambientes
+## Slide 5: The 2 environments
 
-| Ambiente | Propósito | Tags de imagen | ¿Quién aprueba? |
-|---|---|---|---|
-| **dev** | Integración continua, prueba de features | `1.x.x-beta.N` | Auto (merge a main) |
-| **qa** | Testing funcional, sign-off de QA | `1.x.x-rc.N` | Auto (PR de promoción) |
-| **ppd** | Smoke test en infraestructura de producción | `1.x.x` | Reviewer requerido |
-| **prod** | Producción real | `1.x.x` | Reviewer requerido + wait timer |
+| Environment | Purpose                                                 | Image tags          | How it gets a new version    |
+| ----------- | ------------------------------------------------------- | ------------------- | ---------------------------- |
+| **ppd**     | Pre-production: smoke test on production infrastructure | `MAJOR.MINOR.PATCH` | Edit `ppd.json` + PR + merge |
+| **prod**    | Real production                                         | `MAJOR.MINOR.PATCH` | Only by promoting from `ppd` |
 
-### Estado actual de example (hoy, 2 jun 2026)
+Approvals: `deploy.yml` runs each job inside the GitHub Environment of the same name (`ppd` / `prod`). Whether a reviewer must approve is configured in the repository settings, not in the code.
 
-| Ambiente | Imagen desplegada |
-|---|---|
-| dev | `my-app:1.0.3-beta.1` |
-| qa | `my-app:1.0.3-rc.1` |
-| ppd | `my-app:1.0.3` |
-| prod | `my-app:1.0.2` |
-
----
-
-## Diapositiva 6 — Flujo completo de despliegue (de cero a prod)
-
-```
-1. App repo: nuevo commit
-        │
-        ▼
-2. CI del app repo builds → docker push my-app:1.0.4-beta.1
-        │
-        ▼
-3. railway-cd: editar dev.json → image: "my-app:1.0.4-beta.1"
-               crear PR → merge → deploy.yml despliega en DEV
-        │
-        ▼  [QA da ok en dev]
-4. promote.yml (dev → qa) → crea PR con qa.json actualizado
-               revisar PR → merge → deploy.yml despliega en QA
-        │
-        ▼  [QA sign-off]
-5. promote.yml (qa → ppd) → crea PR + requiere aprobación
-               aprobar PR → merge → deploy.yml despliega en PPD
-        │
-        ▼  [smoke tests ok en ppd]
-6. promote.yml (ppd → prod) → crea PR + requiere aprobación del lead
-               aprobar PR → merge → deploy.yml despliega en PROD ✅
-```
-
----
-
-## Diapositiva 7 — ¿Qué hace deploy-railway.sh?
-
-El script es el corazón del despliegue. Ejecuta 4 pasos:
-
-### Paso 1 — Lee el JSON de ambiente
-Extrae `image`, `railwayServiceId`, `railwayEnvironmentId`, etc.
-
-### Paso 2 — Valida la imagen en Docker Hub
-Llama a `validate-image.sh` para confirmar que el tag existe antes de desplegar.
-- Usa `docker manifest inspect` si Docker está disponible
-- Fallback a Docker Hub Registry API v2 si no hay Docker (típico en CI)
-- **Bloquea activamente el tag `latest` en `ppd` y `prod`**
-
-### Paso 3 — Llama a Railway via GraphQL API
-```
-mutation UpdateServiceImage → actualiza la imagen del servicio
-mutation TriggerDeploy      → dispara el redeploy
-```
-
-### Paso 4 — Actualiza metadatos en el JSON
-Escribe `deployedAt`, `deployedBy` y `commitSha` de vuelta en el archivo JSON y lo commitea al repo.
-
----
-
-## Diapositiva 8 — ¿Qué hace promote.sh?
-
-Promueve la imagen de un ambiente al siguiente en la cadena:
-
-```
-dev → qa → ppd → prod
-```
-
-### Qué hace el script
-1. Lee la imagen del ambiente **origen** (`from-env.json`)
-2. Actualiza el JSON del ambiente **destino** con esa imagen
-3. **NO despliega** — eso lo hace el PR + deploy.yml
-
-### Protecciones incorporadas
-- Solo permite avanzar en la cadena (no se puede saltar de dev a prod)
-- Bloquea el tag `latest` hacia `ppd` o `prod`
-- Muestra un diff antes de confirmar
-- Requiere confirmación explícita (o `AUTO_CONFIRM=true` en CI)
+Check what is deployed right now:
 
 ```bash
-# Ejemplo de uso local
-AUTO_CONFIRM=true ./scripts/promote.sh my-app qa ppd
-```
-
----
-
-## Diapositiva 9 — Por qué no usar el tag `latest`
-
-El tag `latest` es una referencia **mutable** — cambia con cada push y crea problemas graves:
-
-| Problema | Consecuencia |
-|---|---|
-| No sabes qué versión está corriendo | Debugging imposible |
-| Rollback = "la anterior a latest" que también cambia | Rollbacks no reproducibles |
-| Docker puede cachear `latest` | Deploy "exitoso" que no actualizó nada |
-| Auditoría imposible | No puedes saber qué cambió entre deploys |
-
-### Convención de tags en este repo
-
-| Ambiente | Formato | Ejemplo |
-|---|---|---|
-| dev | `MAYOR.MENOR.PATCH-beta.N` | `1.2.0-beta.3` |
-| qa | `MAYOR.MENOR.PATCH-rc.N` | `1.2.0-rc.1` |
-| ppd | `MAYOR.MENOR.PATCH` | `1.2.0` |
-| prod | `MAYOR.MENOR.PATCH` | `1.2.0` |
-
----
-
-## Diapositiva 10 — Control de aprobaciones (GitHub Environments)
-
-GitHub Environments pausa el workflow antes de desplegar a ambientes críticos.
-
-### Configuración recomendada
-
-```
-dev  → Sin restricciones (auto-deploy)
-qa   → Sin restricciones (auto-deploy)
-ppd  → Required reviewers: qa-lead, dev-lead
-prod → Required reviewers: lead-engineer, tech-lead
-       Wait timer: 5 minutos (ventana para cancelar)
-       Deployment branches: main only
-```
-
-### Flujo con aprobación
-```
-PR mergeado a main
-      │
-      ▼
-GitHub Actions inicia deploy.yml
-      │
-      ▼ (para ppd/prod)
-⏸  Workflow pausado — notifica a reviewers
-      │
-      ▼ reviewer aprueba en GitHub UI
-      │
-      ▼
-deploy-railway.sh ejecuta el despliegue real
-```
-
----
-
-## Diapositiva 11 — Manejo de secretos y variables
-
-### Dónde vive cada cosa
-
-```
-❌ NO:  railway-cd/apps/my-app/.env          ← NUNCA commitear secretos
-❌ NO:  railway-cd/apps/my-app/prod.json     ← solo metadata de deploy
-✅ SÍ:  Railway Dashboard → Service → Variables
-✅ SÍ:  GitHub Secrets → solo RAILWAY_API_TOKEN
-```
-
-### GitHub Secrets necesarios
-
-| Secret | Para qué |
-|---|---|
-| `RAILWAY_API_TOKEN` | Autenticar llamadas a Railway API |
-| `DOCKERHUB_TOKEN` | Validar imágenes privadas en Docker Hub |
-| `DOCKERHUB_USERNAME` | Usuario de Docker Hub (imágenes privadas) |
-
-### Variables de la app (en Railway, no en git)
-
-El archivo `variables.example.env` documenta **qué** variables necesita la app, sin exponer valores:
-```
-DATABASE_URL=        ← se configura en Railway Dashboard
-JWT_SECRET=          ← se configura en Railway Dashboard
-SMTP_PASSWORD=       ← se configura en Railway Dashboard
-```
-Railway aplica las variables correctas por ambiente automáticamente.
-
----
-
-## Diapositiva 12 — Cómo hacer un rollback
-
-### Opción A — Workflow de rollback (recomendado)
-1. **Actions → Rollback Environment → Run workflow**
-2. Seleccionar: `app`, `environment`, `strategy`
-   - `git-history`: restaura la versión anterior del JSON automáticamente
-   - `manual-tag`: especificar tag exacto (ej: `1.0.1`)
-3. Ingresar razón (requerida para auditoría)
-4. Para `ppd`/`prod`: requiere aprobación del reviewer
-
-### Opción B — Vía git (manual)
-```bash
-# Ver historial de prod.json
-git log --oneline -- apps/my-app/prod.json
-
-# Ver qué imagen tenía hace 2 commits
-git show HEAD~2:apps/my-app/prod.json | jq '.image'
-
-# Restaurar esa versión
-git checkout HEAD~2 -- apps/my-app/prod.json
-git checkout -b rollback/my-app-prod-to-1.0.1
-git commit -am "rollback(my-app/prod): → 1.0.1 — incidente en login"
-gh pr create
-```
-
-### Tiempos estimados de rollback
-
-| Ambiente | Tiempo típico |
-|---|---|
-| dev | ~1–2 min (auto-merge) |
-| qa | ~2–3 min |
-| ppd / prod | ~3–5 min (requiere review) |
-
----
-
-## Diapositiva 13 — Cómo desplegar una nueva versión
-
-### Opción A — Editar JSON directamente (dev)
-```bash
-# 1. Editar el JSON
-vim apps/my-app/dev.json
-# Cambiar: "image": "dockerhub-user/my-app:1.0.4-beta.1"
-
-# 2. Crear PR
-git checkout -b deploy/my-app-dev-1.0.4-beta.1
-git add apps/my-app/dev.json
-git commit -m "deploy(my-app/dev): → 1.0.4-beta.1"
-gh pr create --base main
-```
-
-### Opción B — Desde el App Repository (automatizado)
-```yaml
-# En el CI del app repo, al publicar la imagen:
-- name: Update CD repo
-  run: |
-    git clone https://x-access-token:${{ secrets.CD_TOKEN }}@github.com/org/railway-cd.git
-    cd railway-cd
-    jq --arg img "my-app:${{ env.VERSION }}" '.image = $img' \
-      apps/my-app/dev.json > tmp.json && mv tmp.json apps/my-app/dev.json
-    git commit -am "deploy(my-app/dev): → ${{ env.VERSION }}"
-    git push
-```
-
-### Opción C — Workflow manual en GitHub
-**Actions → Deploy to Railway → Run workflow** → seleccionar app y ambiente.
-
----
-
-## Diapositiva 14 — Comandos útiles de referencia
-
-```bash
-# Ver qué versión está desplegada en cada ambiente
-for env in dev qa ppd prod; do
-  echo -n "$env: "
-  jq -r '.image' apps/my-app/$env.json
+for app in api-leetcode leetcode-spa; do
+  for env in ppd prod; do
+    echo -n "$app/$env: "; jq -r '.image' apps/$app/$env.json
+  done
 done
-
-# Verificar que una imagen existe antes de hacer PR
-./scripts/validate-image.sh dockerhub-user/my-app:1.0.4
-
-# Simular un deploy sin ejecutarlo (dry run)
-DRY_RUN=true ./scripts/deploy-railway.sh apps/my-app/prod.json
-
-# Ver historial de deploys de prod
-git log --oneline -- apps/my-app/prod.json
-
-# Ver qué cambió en el último deploy
-git diff HEAD~1 HEAD -- apps/my-app/prod.json
-
-# Promover de qa a ppd
-AUTO_CONFIRM=true ./scripts/promote.sh my-app qa ppd
 ```
 
 ---
 
-## Diapositiva 15 — Evolución futura del sistema
+## Slide 6: Full deployment flow (from commit to prod)
 
-### Estado actual ✅
-- JSON por ambiente como fuente de verdad
-- Scripts de deploy, validate y promote
-- GitHub Actions para automatización completa
-- Rollback reproducible vía git
+```
+1. App repo: new commit
+        │
+        ▼
+2. Build and push the image manually (or with the app's CI)
+   docker push ditmar/api-leetcode:0.2.0
+        │
+        ▼
+3. leetcode-cd: edit apps/api-leetcode/ppd.json → "image": "...:0.2.0"
+   open PR → merge to master → deploy.yml requests the deploy to PPD
+        │
+        ▼  [verify in Railway + smoke test OK in ppd]
+4. Run promote.yml (ppd → prod)
+   → opens PR with prod.json updated
+   review PR → merge → deploy.yml requests the deploy to PROD
+   → verify in Railway again
+```
 
-### Próximos pasos planeados
-
-| Mejora | Descripción |
-|---|---|
-| **Notificaciones Slack** | Alertas en cada deploy con imagen y ambiente |
-| **Smoke tests post-deploy** | `curl -f https://app/health` automático tras deploy |
-| **Log de deploys** | Tabla histórica en `DEPLOY_LOG.md` o base de datos |
-| **Trigger automático desde CI** | El app repo dispara el deploy a dev via `repository-dispatch` |
-| **Múltiples aplicaciones** | Escalar agregando `apps/auth-service/`, `apps/payments/`, etc. |
+Step 2 and the edit in step 3 are **manual today**: the app repositories do not update this repo automatically (planned work, ticket CD-008).
 
 ---
 
-## Resumen
+## Slide 7: What does deploy.yml do?
+
+Triggers:
+
+- `push` to `master` that changes `apps/**/ppd.json` or `apps/**/prod.json`
+- Manual run (**Actions → Deploy to Railway → Run workflow**) with `app` and `environment`
+
+### Two jobs
+
+**1. `detect-changes`**: finds which environment files changed and builds a matrix `(app, environment, config_file)`.
+
+**2. `deploy`**: runs once per matrix entry, inside the GitHub Environment `ppd` or `prod`:
+
+1. Shows the deployment plan
+2. Validates the Docker image (`validate-image.sh`)
+3. Requests the deploy to Railway (`deploy-railway.sh`)
+4. Commits the updated metadata to `master` (`[skip ci]`), with up to 5 push retries using `git rebase`
+
+All matrix entries share one `concurrency` group, so they never push to `master` at the same time.
+
+> **A green run = deploy request sent, not app running.** The workflow does not wait for the build or run a health check.
+
+---
+
+## Slide 8: What does deploy-railway.sh do?
+
+Usage: `bash scripts/deploy-railway.sh apps/<app>/<env>.json`
+
+### Step 1: Read the environment JSON
+
+Extracts `image`, `railwayServiceId`, `railwayEnvironmentId`, etc.
+
+### Step 2: Validate the image on Docker Hub
+
+Calls `validate-image.sh`:
+
+- Uses `docker manifest inspect` if Docker is available
+- Falls back to the Docker Hub Registry API v2 (typical in CI)
+- **Blocks the `latest` tag** in `ppd` and `prod`
+
+### Step 3: Call the Railway GraphQL API
+
+```
+serviceInstanceUpdate → sets the new image on the service
+serviceInstanceDeploy → triggers the deploy
+```
+
+### Step 4: Update metadata in the JSON
+
+Writes `deployedAt`, `deployedBy` and `commitSha` to the file. The **workflow** (not the script) commits it to `master`.
+
+The script requests the deploy and finishes: it does not wait for the final status.
+
+Needs `RAILWAY_API_TOKEN`. Optional: `DRY_RUN=true`, `SKIP_IMAGE_VALIDATION=true`.
+
+---
+
+## Slide 9: Promotion (ppd → prod)
+
+The only valid promotion is `ppd → prod`. There are two ways:
+
+### promote.yml (recommended)
+
+**Actions → Promote Between Environments → Run workflow**
+(`app`, `ppd`, `prod`, optional notes)
+
+1. Validates the direction and blocks `latest`
+2. Copies the `ppd` image into `apps/<app>/prod.json`
+3. Pushes branch `promote/<app>/ppd-to-prod` and **opens a PR** to `master`
+4. Merging the PR triggers `deploy.yml`
+
+### promote.sh (local)
+
+```bash
+bash scripts/promote.sh api-leetcode ppd prod
+```
+
+Only edits `prod.json` locally and shows a diff. **You** commit and open the PR.
+
+### Protections
+
+- No environment jumps, only `ppd → prod` (script and workflow)
+- `latest` is blocked (script and workflow)
+- **Only `promote.sh`:** stops without changes if `prod` already runs the same image, and asks for confirmation (or `AUTO_CONFIRM=true`)
+- **`promote.yml` does not check for the same image:** it still rewrites `deployedAt` / `notes`, opens a PR, and merging it redeploys the same image. Compare first:
+  `jq -r '.image' apps/<app>/ppd.json apps/<app>/prod.json`
+
+---
+
+## Slide 10: Why not use the `latest` tag
+
+`latest` is a **mutable** reference: it changes with every push.
+
+| Problem                                                | Consequence                                  |
+| ------------------------------------------------------ | -------------------------------------------- |
+| You do not know which version is running               | Impossible debugging                         |
+| Rollback = "the one before latest", which also changes | Rollbacks are not reproducible               |
+| Docker may cache `latest`                              | A "successful" deploy that updated nothing   |
+| No audit trail                                         | You cannot tell what changed between deploys |
+
+### Tag convention in this repo
+
+Semantic versions, like the ones used today: `0.1.0`, `0.11.0`.
+
+Format: `MAJOR.MINOR.PATCH`. Blocked by `validate-image.sh`, `promote.sh` and `promote.yml`.
+
+---
+
+## Slide 11: Secrets and variables
+
+### Where each thing lives
+
+```
+❌ NO:  secrets inside apps/<app>/*.json   ← only deploy metadata goes there
+✅ YES: Railway Dashboard → Service → Variables   (application variables)
+✅ YES: GitHub Secrets → RAILWAY_API_TOKEN
+```
+
+### Secrets used by the workflows
+
+| Secret              | Used by                                     | Purpose                                                           |
+| ------------------- | ------------------------------------------- | ----------------------------------------------------------------- |
+| `RAILWAY_API_TOKEN` | `deploy.yml`, `rollback.yml`                | Authenticates calls to the Railway API                            |
+| `GITHUB_TOKEN`      | `deploy.yml`, `promote.yml`, `rollback.yml` | Automatic: checkout, metadata and rollback commits, promotion PRs |
+
+### Docker Hub credentials
+
+`validate-image.sh` can use `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` for private images, but the workflows **do not pass them today**. Keep the images **public** on Docker Hub.
+
+---
+
+## Slide 12: How to deploy a new version
+
+### Option A: Edit the JSON and open a PR (ppd)
+
+```bash
+git checkout -b deploy/api-leetcode-ppd-0.2.0
+# edit apps/api-leetcode/ppd.json  →  "image": "ditmar/api-leetcode:0.2.0"
+git add apps/api-leetcode/ppd.json
+git commit -m "deploy(api-leetcode/ppd): → 0.2.0"
+git push -u origin deploy/api-leetcode-ppd-0.2.0
+gh pr create --base master
+```
+
+Merge the PR, then watch the **Deploy to Railway** run in the Actions tab.
+
+### Verify before promoting
+
+A green run only means Railway accepted the request. Then:
+
+1. Railway Dashboard → project `leetcode` → environment → service → **Deployments**: latest one finished and active, logs clean
+2. The deployed image is the tag you expect
+3. Smoke test: open the SPA URL or call a known API endpoint
+
+Do not promote until these pass.
+
+### Option B: Manual run
+
+**Actions → Deploy to Railway → Run workflow** → choose `app` and `environment`.
+It redeploys whatever image the file has right now.
+
+### Then promote to prod
+
+**Actions → Promote Between Environments** (see slide 9).
+
+---
+
+## Slide 13: How to roll back
+
+### Option A: Rollback workflow
+
+**Actions → Rollback Environment → Run workflow**
+
+| Input         | Value                                                |
+| ------------- | ---------------------------------------------------- |
+| `app`         | `api-leetcode` or `leetcode-spa`                     |
+| `environment` | `ppd` or `prod`                                      |
+| `strategy`    | `manual-tag` (recommended) or `git-history`          |
+| `target_tag`  | Tag to restore, e.g. `0.1.0` (only `manual-tag`)     |
+| `reason`      | Required, saved in the commit message and in `notes` |
+
+Steps: resolve target image → validate it on Docker Hub → update the JSON → `deploy-railway.sh` (requests the deploy) → **commit directly to `master`**. Verify in Railway afterwards.
+
+- `manual-tag`: same image name, new tag. Reliable.
+- `git-history`: takes the 2nd latest commit that touched the file. Metadata commits also touch it, so it can pick the image that is already running. Read the "Rollback plan" step first.
+- The environment (`ppd` / `prod`) can require approval.
+
+### Option B: Through a PR
+
+```bash
+git log --oneline -- apps/api-leetcode/prod.json
+git show <sha>:apps/api-leetcode/prod.json | jq -r '.image'
+git checkout -b rollback/api-leetcode-prod-to-<tag>
+git checkout <sha> -- apps/api-leetcode/prod.json
+git commit -am "rollback(api-leetcode/prod): → <tag>"
+git push -u origin rollback/api-leetcode-prod-to-<tag>
+gh pr create --base master
+```
+
+Merging the PR triggers `deploy.yml`.
+
+---
+
+## Slide 14: Reference commands
+
+**Requirements:** Bash 4+ (macOS ships 3.2: `brew install bash`), `jq`, `curl`, `git`, and `gh` authenticated (`gh auth login`) for the examples that open a PR. The scripts are not executable in git (mode 100644), so run them with `bash`.
+
+```bash
+# See which version is deployed in each environment
+jq -r '.image' apps/api-leetcode/ppd.json apps/api-leetcode/prod.json
+
+# Check that an image exists before opening the PR
+bash scripts/validate-image.sh ditmar/api-leetcode:0.2.0
+
+# Simulate a deploy without running it (dry run)
+DRY_RUN=true RAILWAY_API_TOKEN=dummy \
+  bash scripts/deploy-railway.sh apps/api-leetcode/ppd.json
+
+# Deploy history of an environment
+git log --oneline -- apps/api-leetcode/prod.json
+
+# What changed in the last deploy
+git diff HEAD~1 HEAD -- apps/api-leetcode/prod.json
+
+# Promote ppd to prod from your machine
+AUTO_CONFIRM=true bash scripts/promote.sh leetcode-spa ppd prod
+```
+
+---
+
+## Slide 15: Known limitations and next steps
+
+### What works today ✅
+
+- One JSON per environment as the source of truth
+- Scripts for deploy, validate and promote
+- GitHub Actions for deploy and promotion (with PR)
+- Image validation and `latest` blocking
+
+### Known limitations and planned work
+
+| Item                            | Description                                                                                                 |
+| ------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| **No trigger from app CI**      | The app repos do not update this repo; the `image` edit is manual (CD-008)                                  |
+| **Rollback pushes directly**    | `rollback.yml` deploys and pushes to `master` without a PR (CD-011)                                         |
+| **`git-history` is unreliable** | It can restore the image that is already running; prefer `manual-tag`                                       |
+| **Deploy first, commit later**  | If the push of `rollback.yml` fails, Railway and git disagree                                               |
+| **Validation can fail open**    | `validate-image.sh` continues if Docker Hub answers with an unexpected status or if `curl`/`jq` are missing |
+| **No wait for the result**      | `deploy-railway.sh` requests the Railway deploy and finishes; no status wait, no health check               |
+| **`promote.yml` never skips**   | With the same image in `ppd` and `prod` it still opens a PR (only `promote.sh` skips)                       |
+| **Private images**              | Docker Hub credentials are not passed to the validation step                                                |
+
+---
+
+## Summary
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│  GitOps: el repo ES el sistema                           │
+│  GitOps: the repo IS the system                          │
 │                                                          │
-│  JSON en git  →  PR  →  merge  →  deploy automático     │
+│  JSON in git  →  PR  →  merge to master  →  auto deploy  │
 │                                                          │
-│  dev → qa → ppd → prod   (solo avance, nunca saltos)    │
+│  ppd → prod   (only forward, no jumps)                   │
 │                                                          │
-│  Secretos: Railway Dashboard  (nunca en git)             │
-│  Aprobaciones: GitHub Environments (ppd y prod)          │
-│  Rollback: git checkout + PR  (~3-5 min en prod)         │
+│  Secrets: Railway Dashboard and GitHub Secrets (not git) │
+│  Approvals: GitHub Environments (ppd and prod)           │
+│  Rollback: restore the old image in git + PR             │
 └──────────────────────────────────────────────────────────┘
 ```
