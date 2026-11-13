@@ -2,6 +2,8 @@
 # validate-image.sh — Verifica que una imagen Docker exista en Docker Hub antes de desplegar.
 # Uso: ./validate-image.sh <image:tag>
 # Ejemplo: ./validate-image.sh dockerhub-user/my-app:1.0.3
+# TARGET_ENV: dev/qa/ppd/prod. RAILWAY_ENVIRONMENT puede aportar el contexto
+# si TARGET_ENV está ausente; si ambos están presentes, deben ser compatibles.
 
 set -euo pipefail
 
@@ -25,10 +27,13 @@ if [[ $# -lt 1 ]]; then
 fi
 
 FULL_IMAGE="$1"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+source "$SCRIPT_DIR/environment-policy.sh"
+EFFECTIVE_TARGET_ENV=$(resolve_target_env "${TARGET_ENV:-}" "${RAILWAY_ENVIRONMENT:-}") || exit 1
 
 # ── Parsear imagen y tag ─────────────────────────────────────────────────────
-if [[ "$FULL_IMAGE" == *":"* ]]; then
-  IMAGE_NAME="${FULL_IMAGE%%:*}"
+if [[ "${FULL_IMAGE##*/}" == *":"* ]]; then
+  IMAGE_NAME="${FULL_IMAGE%:*}"
   IMAGE_TAG="${FULL_IMAGE##*:}"
 else
   IMAGE_NAME="$FULL_IMAGE"
@@ -38,13 +43,20 @@ fi
 
 log_info "Validando imagen: ${IMAGE_NAME}:${IMAGE_TAG}"
 
-# ── Guardia: bloquear 'latest' en ambientes de prod/ppd ─────────────────────
-# Se puede pasar RAILWAY_ENVIRONMENT como variable de entorno al script.
-ENVIRONMENT="${RAILWAY_ENVIRONMENT:-}"
-if [[ "$IMAGE_TAG" == "latest" && ("$ENVIRONMENT" == "prod" || "$ENVIRONMENT" == "ppd") ]]; then
-  log_error "El tag 'latest' está PROHIBIDO en ambiente '$ENVIRONMENT'."
-  log_error "Especifica un tag semántico concreto, por ejemplo: 1.0.3"
-  exit 1
+# ── Validar tags antes de consultar Docker o Railway ──────────────────────
+VERSION_PATTERN='(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)'
+case "$EFFECTIVE_TARGET_ENV" in
+  prod) TAG_PATTERN="^${VERSION_PATTERN}$" ;;
+  ppd)  TAG_PATTERN="^${VERSION_PATTERN}(-rc\.(0|[1-9][0-9]*))?$" ;;
+  dev|qa) TAG_PATTERN="" ;;
+esac
+
+if [[ -n "$TAG_PATTERN" ]]; then
+  if [[ -z "$IMAGE_NAME" || "$FULL_IMAGE" == *@* || ! "$IMAGE_TAG" =~ $TAG_PATTERN ]]; then
+    log_error "Tag inválido en ambiente '$EFFECTIVE_TARGET_ENV': '$IMAGE_TAG'."
+    log_error "prod requiere X.Y.Z; ppd permite X.Y.Z o X.Y.Z-rc.N."
+    exit 1
+  fi
 fi
 
 # ── Método 1: docker manifest inspect (requiere Docker instalado) ────────────

@@ -333,4 +333,26 @@ El tag `latest` es una referencia mutable — apunta a "la última imagen" y cam
 | ppd | `MAYOR.MENOR.PATCH` | `1.2.0` |
 | prod | `MAYOR.MENOR.PATCH` | `1.2.0` |
 
-El script `validate-image.sh` bloquea activamente el uso de `latest` en `ppd` y `prod`.
+El script `validate-image.sh` exige `X.Y.Z` en `prod` y permite `X.Y.Z` o
+`X.Y.Z-rc.N` en `ppd`. Rechaza `latest`, etiquetas ausentes y formatos inválidos
+antes de consultar el registro de imágenes.
+
+La política de CD-003 reconoce los entornos lógicos `dev`, `qa`, `ppd` y `prod`.
+Para Railway admite esos mismos nombres y los alias `development` → `dev` y
+`production` → `prod`, sin modificar `RAILWAY_ENVIRONMENT`. Si se proporcionan
+ambos contextos, deben coincidir. Los nombres desconocidos o la ausencia de
+ambos contextos provocan un error; un contexto vacío se considera ausente.
+El despliegue exige los dos campos `environment` y `railwayEnvironment` del JSON
+y comprueba su coherencia incluso con `SKIP_IMAGE_VALIDATION=true`.
+
+Para validar una imagen directamente, proporciona al menos un contexto conocido:
+
+```bash
+TARGET_ENV=prod ./scripts/validate-image.sh dockerhub-user/my-app:1.2.3
+RAILWAY_ENVIRONMENT=production ./scripts/validate-image.sh dockerhub-user/my-app:1.2.3
+```
+
+Los entornos explícitos `dev` y `qa` conservan sus etiquetas de desarrollo.
+Las pruebas aisladas se ejecutan con `bash tests/cd-003.sh` (Bash, jq y utilidades
+POSIX) y automáticamente en cada Pull Request mediante `CD-003 tests`, sin
+secretos de despliegue ni acceso real a Railway o Docker Hub.
