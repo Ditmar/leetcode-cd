@@ -44,16 +44,29 @@ jobs:
         id: build-matrix
         run: |
           # Manual dispatch: construir matrix desde inputs
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            APP="${{ inputs.app }}"
-            ENV="${{ inputs.environment }}"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            APP="$APP_NAME"
+            ENV="$TARGET_ENVIRONMENT"
+            if [[ ! "$APP" =~ ^[a-z0-9-]+$ ]]; then
+              echo "❌ Nombre de app inválido: $APP"
+              exit 1
+            fi
+            if [[ ! -d "apps/$APP" || -L "apps/$APP" ]]; then
+              echo "❌ Directorio de app no válido: apps/$APP"
+              exit 1
+            fi
+            case "$ENV" in
+              ppd|prod) ;;
+              *) echo "❌ Ambiente inválido: $ENV"; exit 1 ;;
+            esac
+
             MATRIX=$(jq -n \
               --arg app "$APP" \
               --arg env "$ENV" \
               --arg file "apps/$APP/$ENV.json" \
               '[{"app": $app, "environment": $env, "config_file": $file}]')
-            echo "matrix=$(echo $MATRIX | jq -c .)" >> $GITHUB_OUTPUT
-            echo "has-changes=true" >> $GITHUB_OUTPUT
+            printf 'matrix=%s\n' "$(jq -c . <<< "$MATRIX")" >> "$GITHUB_OUTPUT"
+            printf 'has-changes=true\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -62,8 +75,7 @@ jobs:
                           git diff --name-only HEAD^ HEAD -- 'apps/**/*.json')
 
           if [[ -z "$CHANGED_FILES" ]]; then
-            echo "has-changes=false" >> $GITHUB_OUTPUT
-            echo "matrix=[]" >> $GITHUB_OUTPUT
+            printf 'has-changes=false\nmatrix=[]\n' >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
@@ -72,6 +84,22 @@ jobs:
             # Parsear app y ambiente del path: apps/<app>/<env>.json
             APP=$(echo "$file" | cut -d'/' -f2)
             ENV=$(echo "$file" | cut -d'/' -f3 | sed 's/\.json$//')
+            if [[ ! "$APP" =~ ^[a-z0-9-]+$ ]]; then
+              echo "❌ Nombre de app inválido en archivo cambiado: $file"
+              exit 1
+            fi
+            if [[ ! -d "apps/$APP" || -L "apps/$APP" ]]; then
+              echo "❌ Directorio de app no válido: apps/$APP"
+              exit 1
+            fi
+            case "$ENV" in
+              ppd|prod) ;;
+              *) echo "❌ Ambiente inválido en archivo cambiado: $file"; exit 1 ;;
+            esac
+            if [[ "$file" != "apps/$APP/$ENV.json" ]]; then
+              echo "❌ Ruta de configuración inválida: $file"
+              exit 1
+            fi
             ENTRY=$(jq -n \
               --arg app "$APP" \
               --arg env "$ENV" \
@@ -80,8 +108,12 @@ jobs:
             MATRIX=$(echo "$MATRIX" | jq --argjson entry "$ENTRY" '. + [$entry]')
           done <<< "$CHANGED_FILES"
 
-          echo "matrix=$(echo $MATRIX | jq -c .)" >> $GITHUB_OUTPUT
-          echo "has-changes=true" >> $GITHUB_OUTPUT
+          printf 'matrix=%s\n' "$(jq -c . <<< "$MATRIX")" >> "$GITHUB_OUTPUT"
+          printf 'has-changes=true\n' >> "$GITHUB_OUTPUT"
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          APP_NAME: ${{ inputs.app }}
+          TARGET_ENVIRONMENT: ${{ inputs.environment }}
 
   # ── Deploy por cada ambiente que cambió ────────────────────────────────────
   deploy:
@@ -123,40 +155,74 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq jq curl
 
+      - name: Validate deployment target
+        run: |
+          if [[ ! "$APP_NAME" =~ ^[a-z0-9-]+$ ]]; then
+            echo "❌ Nombre de app inválido: $APP_NAME"
+            exit 1
+          fi
+          if [[ ! -d "apps/$APP_NAME" || -L "apps/$APP_NAME" ]]; then
+            echo "❌ Directorio de app no válido: apps/$APP_NAME"
+            exit 1
+          fi
+          case "$DEPLOY_ENVIRONMENT" in
+            ppd|prod) ;;
+            *) echo "❌ Ambiente inválido: $DEPLOY_ENVIRONMENT"; exit 1 ;;
+          esac
+          EXPECTED_CONFIG="apps/$APP_NAME/$DEPLOY_ENVIRONMENT.json"
+          if [[ "$CONFIG_FILE" != "$EXPECTED_CONFIG" || ! -f "$EXPECTED_CONFIG" ]]; then
+            echo "❌ Configuración inválida o inexistente: $CONFIG_FILE"
+            exit 1
+          fi
+        env:
+          APP_NAME: ${{ matrix.app }}
+          DEPLOY_ENVIRONMENT: ${{ matrix.environment }}
+          CONFIG_FILE: ${{ matrix.config_file }}
+
       - name: Show deployment plan
         run: |
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "  DEPLOYMENT PLAN"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  App:         ${{ matrix.app }}"
-          echo "  Environment: ${{ matrix.environment }}"
-          echo "  Config:      ${{ matrix.config_file }}"
-          echo "  Triggered by: ${{ github.actor }}"
-          echo "  Commit:      ${{ github.sha }}"
+          printf '  App:         %s\n' "$APP_NAME"
+          printf '  Environment: %s\n' "$DEPLOY_ENVIRONMENT"
+          printf '  Config:      %s\n' "$CONFIG_FILE"
+          printf '  Triggered by: %s\n' "$GITHUB_ACTOR"
+          printf '  Commit:      %s\n' "$GITHUB_SHA"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          cat "${{ matrix.config_file }}"
+          cat "$CONFIG_FILE"
+        env:
+          APP_NAME: ${{ matrix.app }}
+          DEPLOY_ENVIRONMENT: ${{ matrix.environment }}
+          CONFIG_FILE: ${{ matrix.config_file }}
 
       - name: Validate Docker image exists
         run: |
           chmod +x scripts/validate-image.sh
-          IMAGE=$(jq -r '.image' "${{ matrix.config_file }}")
-          RAILWAY_ENVIRONMENT="${{ matrix.environment }}" \
+          IMAGE=$(jq -r '.image' "$CONFIG_FILE")
+          RAILWAY_ENVIRONMENT="$DEPLOY_ENVIRONMENT" \
             ./scripts/validate-image.sh "$IMAGE"
+        env:
+          CONFIG_FILE: ${{ matrix.config_file }}
+          DEPLOY_ENVIRONMENT: ${{ matrix.environment }}
 
       - name: Deploy to Railway
         run: |
           chmod +x scripts/deploy-railway.sh
-          ./scripts/deploy-railway.sh "${{ matrix.config_file }}"
+          ./scripts/deploy-railway.sh "$CONFIG_FILE"
+        env:
+          CONFIG_FILE: ${{ matrix.config_file }}
 
       - name: Update metadata in config file
         run: |
           # deploy-railway.sh ya actualiza el JSON, ahora commiteamos el cambio
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "${{ matrix.config_file }}"
+          git add "$CONFIG_FILE"
           git diff --staged --quiet && exit 0
 
-          git commit -m "chore(cd): update deploy metadata for ${{ matrix.app }}/${{ matrix.environment }} [skip ci]"
+          COMMIT_SUBJECT=$(printf 'chore(cd): update deploy metadata for %s/%s [skip ci]' "$APP_NAME" "$DEPLOY_ENVIRONMENT")
+          git commit -m "$COMMIT_SUBJECT"
 
           # Retry con rebase: el `concurrency` group ya serializa los jobs de este
           # workflow, pero esto protege además contra pushes de otros workflows
@@ -182,17 +248,27 @@ jobs:
               exit 1
             }
           done
+        env:
+          CONFIG_FILE: ${{ matrix.config_file }}
+          APP_NAME: ${{ matrix.app }}
+          DEPLOY_ENVIRONMENT: ${{ matrix.environment }}
 
       - name: Notify deployment success
         if: success()
         run: |
-          IMAGE=$(jq -r '.image' "${{ matrix.config_file }}")
-          echo "✅ Deployed $IMAGE to ${{ matrix.environment }} successfully"
+          IMAGE=$(jq -r '.image' "$CONFIG_FILE")
+          printf '✅ Deployed %s to %s successfully\n' "$IMAGE" "$DEPLOY_ENVIRONMENT"
           # Aquí podrías agregar notificación a Slack/Teams:
-          # curl -X POST ${{ secrets.SLACK_WEBHOOK }} -d '{"text": "..."}'
+          # curl -X POST "$SLACK_WEBHOOK" -d '{"text": "..."}'
+        env:
+          CONFIG_FILE: ${{ matrix.config_file }}
+          DEPLOY_ENVIRONMENT: ${{ matrix.environment }}
 
       - name: Notify deployment failure
         if: failure()
         run: |
-          echo "❌ Deployment FAILED for ${{ matrix.app }} in ${{ matrix.environment }}"
+          printf '❌ Deployment FAILED for %s in %s\n' "$APP_NAME" "$DEPLOY_ENVIRONMENT"
           # Aquí agregar alerta a Slack/PagerDuty
+        env:
+          APP_NAME: ${{ matrix.app }}
+          DEPLOY_ENVIRONMENT: ${{ matrix.environment }}
