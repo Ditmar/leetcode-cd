@@ -117,6 +117,9 @@ jobs:
           TARGET_IMAGE="${{ steps.target.outputs.image }}"
           RAILWAY_ENVIRONMENT="${{ inputs.environment }}" \
             ./scripts/validate-image.sh "$TARGET_IMAGE"
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Show rollback plan
         run: |
@@ -154,6 +157,8 @@ jobs:
           ./scripts/deploy-railway.sh "${{ steps.current.outputs.config_file }}"
         env:
           RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Commit rollback state to main
         run: |
