@@ -334,3 +334,49 @@ El tag `latest` es una referencia mutable — apunta a "la última imagen" y cam
 | prod | `MAYOR.MENOR.PATCH` | `1.2.0` |
 
 El script `validate-image.sh` bloquea activamente el uso de `latest` en `ppd` y `prod`.
+
+---
+
+## Automatic Pull Request Checks (CD-009)
+
+`.github/workflows/pr-checks.yml` runs checks whenever a pull request is opened, updated, or reopened, regardless of its target branch. The workflow has only the `contents: read` permission: it does not access secrets, deploy applications, or write to the repository.
+
+The following stable check names can be required before merging:
+
+| Required check | Responsibility |
+|----------------|----------------|
+| `Validate deployment configs` | JSON schema validation, protected infrastructure comparison, and verification of changed Docker images |
+| `ShellCheck` | Static analysis of Bash scripts |
+| `Actionlint` | Static analysis of all GitHub Actions workflows |
+
+### Configuration and infrastructure policy
+
+- The validator recognizes `dev`, `qa`, `ppd`, and `prod`. The configurations currently present in `master` use only `ppd` and `prod`. The Railway environment name for `prod` is `production`.
+- Only known schema fields are accepted. The optional `imageDigest` field, when present, must use `sha256:` followed by 64 lowercase hexadecimal characters. Its syntax is validated, but it is not checked against the manifest identified by the `image` tag.
+- `master` currently contains four deployment configurations: `ppd.json` and `prod.json` for each of `api-leetcode` and `leetcode-spa`. Each `app` value must match its application directory, and all three Railway identifiers must be valid UUIDs. Neither old nor new placeholder values are accepted. The validator also recognizes `dev` and `qa` formats for potential future authorized additions, but those files are not part of the current `master` configuration.
+- In existing configurations, only `image`, `notes`, `deployedAt`, `deployedBy`, and `commitSha` may change. `imageDigest` and all other properties are protected. The comparison uses `jq` to compare JSON objects semantically, so changes in formatting or indentation do not trigger false positives.
+- Adding or deleting deployment configuration files is rejected. No label or automatic exception permits infrastructure or schema changes.
+
+### Docker image policy
+
+New or modified image references must follow `owner/name:X.Y.Z` with an explicit semantic version; `latest` is forbidden. The `dev` and `qa` environments accept SemVer prereleases, `ppd` accepts stable versions and `rc` prereleases, and `prod` accepts stable versions only.
+
+The workflow queries Docker Hub tags without downloading image layers. Only HTTP 200 counts as success; network errors, authentication failures, HTTP 404 or 5xx responses, unexpected responses, and missing verification tools cause the check to fail. To keep the `pull_request` event secure, verification is anonymous. Private images that cannot be checked without repository secrets are rejected.
+
+An unchanged image reference does not require an external Docker Hub lookup when it matches the base branch; its syntax and version policy are still validated.
+
+### Making checks required before merging
+
+A repository administrator must configure GitHub **Settings → Branches** (branch protection) or **Settings → Rules → Rulesets**:
+
+1. Select `master` as the integration branch and require pull requests before merging.
+2. Require status checks and add these exact check names: `Validate deployment configs`, `ShellCheck`, and `Actionlint`.
+3. Save the rule and verify that all three checks appear on a pull request.
+
+The workflow runs for pull requests targeting any branch, but branch protection is configured per branch. The CD-009 pull request targets `master`. Other branches require separate protection rules if the team decides to protect them. If only the instructor has administrative permissions, a maintainer must send these three check names to the instructor and request that the rule be applied. This implementation does not change remote repository settings.
+
+### Tools and CD-005 compatibility
+
+The validators use `jq`, `curl`, Bash, and `date` on the Ubuntu 24.04 runner. ShellCheck v0.10.0 and Actionlint v1.7.7 are downloaded from their official releases and verified against pinned SHA-256 checksums. The operational workflows use `ubuntu-24.04`, and `actions/checkout` uses verified commit `11bd71901bbe5b1630ceea73d27597364c9af683` (v4.2.2). Redundant `jq` and `curl` installations are avoided when these tools are already available on the runner.
+
+CD-005 must confirm the semantics of `imageDigest` and its relationship to `image` before digest-based features are introduced. These checks do not replace or change CD-005 image validation: currently, the Docker Hub tag is checked for existence only when `image` changes. The `imageDigest` field remains optional, syntax-validated, and protected from ordinary modifications.
