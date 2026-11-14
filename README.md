@@ -337,89 +337,46 @@ El script `validate-image.sh` bloquea activamente el uso de `latest` en `ppd` y 
 
 ---
 
-## Checks automáticos de Pull Requests (CD-009)
+## Automatic Pull Request Checks (CD-009)
 
-`.github/workflows/pr-checks.yml` ejecuta checks al abrir, actualizar o reabrir
-cualquier Pull Request, sin filtrar por rama destino. El workflow solo tiene
-permiso `contents: read`: no consume secretos, no despliega y no escribe en el
-repositorio.
+`.github/workflows/pr-checks.yml` runs checks whenever a pull request is opened, updated, or reopened, regardless of its target branch. The workflow has only the `contents: read` permission: it does not access secrets, deploy applications, or write to the repository.
 
-Los checks estables que pueden exigirse antes de fusionar son:
+The following stable check names can be required before merging:
 
-| Check requerido | Responsabilidad |
-|-----------------|-----------------|
-| `Validate deployment configs` | Esquema JSON, comparación de infraestructura y verificación de imágenes modificadas |
-| `ShellCheck` | Análisis estático de los scripts Bash |
-| `Actionlint` | Análisis de todos los workflows de GitHub Actions |
+| Required check | Responsibility |
+|----------------|----------------|
+| `Validate deployment configs` | JSON schema validation, protected infrastructure comparison, and verification of changed Docker images |
+| `ShellCheck` | Static analysis of Bash scripts |
+| `Actionlint` | Static analysis of all GitHub Actions workflows |
 
-### Política de configuración e infraestructura
+### Configuration and infrastructure policy
 
-- El validador reconoce `dev`, `qa`, `ppd` y `prod`; las configuraciones
-  actualmente presentes en `master` usan `ppd` y `prod`. El valor Railway
-  correspondiente a `prod` es `production`.
-- El esquema acepta únicamente sus campos conocidos. `imageDigest` es
-  opcional y, si está presente, debe usar `sha256:` seguido de 64 dígitos
-  hexadecimales minúsculos. Se valida su forma, no que corresponda al
-  manifiesto de la referencia etiquetada `image`.
-- Actualmente `master` contiene cuatro configuraciones: `ppd.json` y
-  `prod.json` para `api-leetcode` y `leetcode-spa`. Todos sus valores `app`
-  deben coincidir con el directorio de la aplicación y los tres identificadores
-  Railway deben ser UUID válidos. No se aceptan placeholders heredados ni
-  nuevos. El validador conserva compatibilidad de formato con ambientes `dev`
-  y `qa` si se incorporan en un cambio posterior autorizado, pero estos
-  archivos no forman parte del estado actual de `master`.
-- En configuraciones existentes solo pueden cambiar `image`, `notes`,
-  `deployedAt`, `deployedBy` y `commitSha`. `imageDigest` y las demás
-  propiedades son protegidos; los objetos se comparan semánticamente con
-  `jq`, por lo que formato e indentación no generan falsos positivos.
-- Agregar o eliminar archivos de configuración también falla. No existe una
-  etiqueta ni otra excepción automática para permitir cambios de
-  infraestructura o de esquema.
+- The validator recognizes `dev`, `qa`, `ppd`, and `prod`. The configurations currently present in `master` use only `ppd` and `prod`. The Railway environment name for `prod` is `production`.
+- Only known schema fields are accepted. The optional `imageDigest` field, when present, must use `sha256:` followed by 64 lowercase hexadecimal characters. Its syntax is validated, but it is not checked against the manifest identified by the `image` tag.
+- `master` currently contains four deployment configurations: `ppd.json` and `prod.json` for each of `api-leetcode` and `leetcode-spa`. Each `app` value must match its application directory, and all three Railway identifiers must be valid UUIDs. Neither old nor new placeholder values are accepted. The validator also recognizes `dev` and `qa` formats for potential future authorized additions, but those files are not part of the current `master` configuration.
+- In existing configurations, only `image`, `notes`, `deployedAt`, `deployedBy`, and `commitSha` may change. `imageDigest` and all other properties are protected. The comparison uses `jq` to compare JSON objects semantically, so changes in formatting or indentation do not trigger false positives.
+- Adding or deleting deployment configuration files is rejected. No label or automatic exception permits infrastructure or schema changes.
 
-### Política de imágenes
+### Docker image policy
 
-Las referencias nuevas o modificadas deben ser `owner/name:X.Y.Z` con versión
-SemVer explícita; no se admite `latest`. `dev` y `qa` aceptan prereleases
-SemVer, `ppd` acepta versiones estables y prereleases `rc`, y `prod` solo
-versiones estables. El workflow consulta los tags de Docker Hub sin descargar
-capas. Solo HTTP 200 es éxito; errores de red, autenticación, 404, 5xx,
-respuestas inesperadas o herramientas faltantes hacen fallar el check. Para
-mantener seguro el evento `pull_request`, la verificación es anónima: las
-imágenes privadas no pueden verificarse con secretos del repositorio y fallan
-cerrado.
+New or modified image references must follow `owner/name:X.Y.Z` with an explicit semantic version; `latest` is forbidden. The `dev` and `qa` environments accept SemVer prereleases, `ppd` accepts stable versions and `rc` prereleases, and `prod` accepts stable versions only.
 
-Una imagen sin cambios evita la consulta externa si su valor es idéntico al
-de la rama base. Su sintaxis y política de versión se siguen comprobando.
+The workflow queries Docker Hub tags without downloading image layers. Only HTTP 200 counts as success; network errors, authentication failures, HTTP 404 or 5xx responses, unexpected responses, and missing verification tools cause the check to fail. To keep the `pull_request` event secure, verification is anonymous. Private images that cannot be checked without repository secrets are rejected.
 
-### Hacer obligatorios los checks
+An unchanged image reference does not require an external Docker Hub lookup when it matches the base branch; its syntax and version policy are still validated.
 
-Un administrador del repositorio debe configurar en GitHub **Settings →
-Branches** (protección de rama) o **Settings → Rules → Rulesets**:
+### Making checks required before merging
 
-1. Seleccionar `master` como rama de integración y exigir Pull Requests antes de
-   fusionar.
-2. Activar la exigencia de checks/status checks y agregar exactamente:
-   `Validate deployment configs`, `ShellCheck` y `Actionlint`.
-3. Guardar la regla y verificar que los tres checks aparecen en una PR.
+A repository administrator must configure GitHub **Settings → Branches** (branch protection) or **Settings → Rules → Rulesets**:
 
-El workflow se ejecuta para cualquier rama destino, pero la protección se
-configura por rama. El Pull Request de CD-009 debe apuntar a `master`. Si el equipo decide
-proteger otras ramas, deben configurarse reglas independientes. Si solo el docente tiene permisos
-administrativos, un mantenedor debe enviarle estos tres nombres de checks y
-solicitar que aplique la regla; esta implementación no cambia ajustes remotos.
+1. Select `master` as the integration branch and require pull requests before merging.
+2. Require status checks and add these exact check names: `Validate deployment configs`, `ShellCheck`, and `Actionlint`.
+3. Save the rule and verify that all three checks appear on a pull request.
 
-### Herramientas y compatibilidad de CD-005
+The workflow runs for pull requests targeting any branch, but branch protection is configured per branch. The CD-009 pull request targets `master`. Other branches require separate protection rules if the team decides to protect them. If only the instructor has administrative permissions, a maintainer must send these three check names to the instructor and request that the rule be applied. This implementation does not change remote repository settings.
 
-Los validadores usan `jq`, `curl`, Bash y `date` del runner Ubuntu 24.04.
-ShellCheck v0.10.0 y Actionlint v1.7.7 se descargan desde sus releases
-oficiales y se verifican con SHA-256 fijados. Los workflows operativos se
-fijaron a `ubuntu-24.04`; `actions/checkout` usa el commit verificado
-`11bd71901bbe5b1630ceea73d27597364c9af683` (v4.2.2). Las instalaciones redundantes de jq/curl se evitan cuando las
-herramientas están disponibles en el runner.
+### Tools and CD-005 compatibility
 
-CD-005 debe confirmar la semántica y el vínculo entre `imageDigest` y
-`image` antes de añadir funcionalidad por digest. Esta validación no sustituye
-ni modifica la validación de imágenes de CD-005: actualmente solo se verifica
-la existencia de la etiqueta Docker Hub cuando cambia `image`, y el campo
-`imageDigest` permanece opcional, sintácticamente validado y protegido contra
-cambios ordinarios.
+The validators use `jq`, `curl`, Bash, and `date` on the Ubuntu 24.04 runner. ShellCheck v0.10.0 and Actionlint v1.7.7 are downloaded from their official releases and verified against pinned SHA-256 checksums. The operational workflows use `ubuntu-24.04`, and `actions/checkout` uses verified commit `11bd71901bbe5b1630ceea73d27597364c9af683` (v4.2.2). Redundant `jq` and `curl` installations are avoided when these tools are already available on the runner.
+
+CD-005 must confirm the semantics of `imageDigest` and its relationship to `image` before digest-based features are introduced. These checks do not replace or change CD-005 image validation: currently, the Docker Hub tag is checked for existence only when `image` changes. The `imageDigest` field remains optional, syntax-validated, and protected from ordinary modifications.
