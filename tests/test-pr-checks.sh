@@ -250,7 +250,7 @@ fi
 pass "environment variables cannot authorize protected infrastructure changes"
 
 new_case
-edit_json apps/leetcode-spa/ppd.json '.image = "ditmar/leetcode-spa:0.12.0"'
+edit_json apps/leetcode-spa/ppd.json '.notes = "simulate git diff failure for CD-009"'
 commit_config_changes
 install_failing_git_diff
 expect_failure "git diff failure is rejected by protected config check" run_in_case env \
