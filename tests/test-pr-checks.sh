@@ -166,20 +166,20 @@ commit_config_changes
 expect_failure "application/directory mismatch is rejected" run_in_case bash scripts/validate-configs.sh "$BASE_SHA"
 
 new_case
-expect_failure "latest image tag is rejected" run_in_case bash scripts/validate-image.sh --format-only dev ditmar/api-leetcode:latest
-expect_failure "image without a tag is rejected" run_in_case bash scripts/validate-image.sh --format-only dev ditmar/api-leetcode
-run_in_case bash scripts/validate-image.sh --format-only prod ditmar/api-leetcode:1.2.3 || fail "stable version was rejected"
-run_in_case bash scripts/validate-image.sh --format-only prod ditmar/api-leetcode:0.0.0 || fail "zero-valued stable version was rejected"
-run_in_case bash scripts/validate-image.sh --format-only dev ditmar/api-leetcode:1.2.3-beta.1 || fail "dev prerelease was rejected"
-run_in_case bash scripts/validate-image.sh --format-only qa ditmar/api-leetcode:1.2.3-rc.1 || fail "qa prerelease was rejected"
-run_in_case bash scripts/validate-image.sh --format-only ppd ditmar/api-leetcode:1.2.3-rc.1 || fail "ppd rc prerelease was rejected"
-expect_failure "non-rc prerelease in ppd is rejected" run_in_case bash scripts/validate-image.sh --format-only ppd ditmar/api-leetcode:1.2.3-beta.1
-expect_failure "prerelease in prod is rejected" run_in_case bash scripts/validate-image.sh --format-only prod ditmar/api-leetcode:1.2.3-rc.1
-expect_failure "empty prerelease identifier is rejected" run_in_case bash scripts/validate-image.sh --format-only qa ditmar/api-leetcode:1.2.3-rc..1
-expect_failure "numeric prerelease with leading zero is rejected" run_in_case bash scripts/validate-image.sh --format-only qa ditmar/api-leetcode:1.2.3-rc.01
-expect_failure "core version component with leading zero is rejected" run_in_case bash scripts/validate-image.sh --format-only dev ditmar/api-leetcode:01.2.3
-expect_failure "Docker build metadata syntax is rejected in tags" run_in_case bash scripts/validate-image.sh --format-only dev ditmar/api-leetcode:1.2.3+build.1
-expect_failure "Docker tag over 128 characters is rejected" run_in_case bash scripts/validate-image.sh --format-only dev "ditmar/api-leetcode:1.2.3-$(printf '%0129d' 1)"
+expect_failure "latest image tag is rejected" run_in_case bash scripts/validate-pr-image.sh --format-only dev ditmar/api-leetcode:latest
+expect_failure "image without a tag is rejected" run_in_case bash scripts/validate-pr-image.sh --format-only dev ditmar/api-leetcode
+run_in_case bash scripts/validate-pr-image.sh --format-only prod ditmar/api-leetcode:1.2.3 || fail "stable version was rejected"
+run_in_case bash scripts/validate-pr-image.sh --format-only prod ditmar/api-leetcode:0.0.0 || fail "zero-valued stable version was rejected"
+run_in_case bash scripts/validate-pr-image.sh --format-only dev ditmar/api-leetcode:1.2.3-beta.1 || fail "dev prerelease was rejected"
+run_in_case bash scripts/validate-pr-image.sh --format-only qa ditmar/api-leetcode:1.2.3-rc.1 || fail "qa prerelease was rejected"
+run_in_case bash scripts/validate-pr-image.sh --format-only ppd ditmar/api-leetcode:1.2.3-rc.1 || fail "ppd rc prerelease was rejected"
+expect_failure "non-rc prerelease in ppd is rejected" run_in_case bash scripts/validate-pr-image.sh --format-only ppd ditmar/api-leetcode:1.2.3-beta.1
+expect_failure "prerelease in prod is rejected" run_in_case bash scripts/validate-pr-image.sh --format-only prod ditmar/api-leetcode:1.2.3-rc.1
+expect_failure "empty prerelease identifier is rejected" run_in_case bash scripts/validate-pr-image.sh --format-only qa ditmar/api-leetcode:1.2.3-rc..1
+expect_failure "numeric prerelease with leading zero is rejected" run_in_case bash scripts/validate-pr-image.sh --format-only qa ditmar/api-leetcode:1.2.3-rc.01
+expect_failure "core version component with leading zero is rejected" run_in_case bash scripts/validate-pr-image.sh --format-only dev ditmar/api-leetcode:01.2.3
+expect_failure "Docker build metadata syntax is rejected in tags" run_in_case bash scripts/validate-pr-image.sh --format-only dev ditmar/api-leetcode:1.2.3+build.1
+expect_failure "Docker tag over 128 characters is rejected" run_in_case bash scripts/validate-pr-image.sh --format-only dev "ditmar/api-leetcode:1.2.3-$(printf '%0129d' 1)"
 pass "Docker image tag rules match all four environments"
 
 new_case
@@ -187,7 +187,7 @@ if (
   cd "$CASE_DIR"
   marker="$CASE_DIR/curl-was-called"
   CURL_BIN="$CASE_DIR/mock-bin/curl" MOCK_CURL_MARKER="$marker" RAILWAY_ENVIRONMENT=dev \
-    bash scripts/validate-image.sh ditmar/api-leetcode:latest
+    bash scripts/validate-pr-image.sh ditmar/api-leetcode:latest
 ); then
   fail "invalid image format was accepted"
 fi
@@ -212,6 +212,34 @@ run_in_case bash scripts/validate-configs.sh "$BASE_SHA" || fail "valid metadata
 run_in_case bash scripts/check-config-changes.sh "$BASE_SHA" || fail "allowed metadata changes were rejected"
 pass "valid metadata updates are permitted without requiring a full commit hash"
 
+for timestamp in \
+  "2026-11-18T14:30:00Z" \
+  "2026-11-18T14:30:00-04:00" \
+  "2024-02-29T10:00:00Z"; do
+
+  new_case
+  edit_json apps/leetcode-spa/ppd.json ".deployedAt = \"$timestamp\""
+  commit_config_changes
+
+  run_in_case bash scripts/validate-configs.sh "$BASE_SHA" ||
+    fail "valid ISO-8601 timestamp was rejected: $timestamp"
+
+  pass "valid ISO-8601 timestamp accepted: $timestamp"
+done
+
+for timestamp in \
+  "2026-02-29T10:00:00Z" \
+  "2026-13-18T14:30:00Z" \
+  "2026-11-18T25:30:00Z"; do
+
+  new_case
+  edit_json apps/leetcode-spa/ppd.json ".deployedAt = \"$timestamp\""
+  commit_config_changes
+
+  expect_failure "invalid ISO-8601 timestamp rejected: $timestamp" \
+    run_in_case bash scripts/validate-configs.sh "$BASE_SHA"
+done
+
 new_case
 edit_json apps/leetcode-spa/ppd.json '.railwayServiceId = "d524ac17-cab8-4f46-ad00-cb6f3975a244"'
 commit_config_changes
@@ -229,9 +257,17 @@ commit_config_changes
 expect_failure "protected field deletion is rejected" run_in_case bash scripts/check-config-changes.sh "$BASE_SHA"
 
 new_case
+cp "$CASE_DIR/apps/leetcode-spa/ppd.json" "$CASE_DIR/apps/leetcode-spa/qa.json"
+edit_json apps/leetcode-spa/qa.json '.environment = "qa" | .railwayEnvironment = "qa"'
+commit_config_changes
+run_in_case bash scripts/validate-configs.sh "$BASE_SHA" || fail "new valid deployment configuration failed structural validation"
+run_in_case bash scripts/check-config-changes.sh "$BASE_SHA" || fail "new valid deployment configuration was rejected"
+pass "new valid deployment configuration is accepted"
+
+new_case
 cp "$CASE_DIR/apps/leetcode-spa/ppd.json" "$CASE_DIR/apps/leetcode-spa/staging.json"
 commit_config_changes
-expect_failure "new deployment configuration is rejected" run_in_case bash scripts/check-config-changes.sh "$BASE_SHA"
+expect_failure "unsupported new environment is rejected" run_in_case bash scripts/validate-configs.sh "$BASE_SHA"
 
 new_case
 git -C "$CASE_DIR" rm -q apps/leetcode-spa/prod.json
@@ -273,7 +309,8 @@ new_case
 edit_json apps/leetcode-spa/ppd.json '.imageDigest = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"'
 commit_config_changes
 run_in_case bash scripts/validate-configs.sh "$BASE_SHA" || fail "valid optional imageDigest was rejected"
-expect_failure "imageDigest change remains protected" run_in_case bash scripts/check-config-changes.sh "$BASE_SHA"
+run_in_case bash scripts/check-config-changes.sh "$BASE_SHA" || fail "valid imageDigest update was rejected"
+pass "valid imageDigest updates are permitted"
 
 new_case
 edit_json apps/leetcode-spa/ppd.json '.imageDigest = "not-a-digest"'
@@ -284,7 +321,7 @@ new_case
 if (
   cd "$CASE_DIR"
   CURL_BIN="$CASE_DIR/mock-bin/curl" MOCK_HTTP_STATUS=404 RAILWAY_ENVIRONMENT=dev \
-    bash scripts/validate-image.sh ditmar/api-leetcode:1.2.3
+    bash scripts/validate-pr-image.sh ditmar/api-leetcode:1.2.3
 ); then
   fail "HTTP 404 image response was accepted"
 fi
@@ -295,7 +332,7 @@ for http_status in 401 403 500 302; do
   if (
     cd "$CASE_DIR"
     CURL_BIN="$CASE_DIR/mock-bin/curl" MOCK_HTTP_STATUS="$http_status" RAILWAY_ENVIRONMENT=dev \
-      bash scripts/validate-image.sh ditmar/api-leetcode:1.2.3
+      bash scripts/validate-pr-image.sh ditmar/api-leetcode:1.2.3
   ); then
     fail "Docker Hub HTTP $http_status was accepted"
   fi
@@ -306,7 +343,7 @@ new_case
 if (
   cd "$CASE_DIR"
   CURL_BIN="$CASE_DIR/mock-bin/curl" MOCK_CURL_EXIT=7 RAILWAY_ENVIRONMENT=dev \
-    bash scripts/validate-image.sh ditmar/api-leetcode:1.2.3
+    bash scripts/validate-pr-image.sh ditmar/api-leetcode:1.2.3
 ); then
   fail "Docker Hub connection failure was accepted"
 fi
@@ -316,7 +353,7 @@ new_case
 if (
   cd "$CASE_DIR"
   CURL_BIN=cd009-curl-not-installed RAILWAY_ENVIRONMENT=dev \
-    bash scripts/validate-image.sh ditmar/api-leetcode:1.2.3
+    bash scripts/validate-pr-image.sh ditmar/api-leetcode:1.2.3
 ); then
   fail "missing curl executable was accepted"
 fi
