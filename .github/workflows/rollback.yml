@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       app:
-        description: "App a hacer rollback (ej: my-app)"
+        description: "App to roll back (e.g. api-leetcode)"
         required: true
         type: string
       environment:
@@ -155,7 +155,7 @@ jobs:
         env:
           RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
 
-      - name: Commit rollback state to main
+      - name: Commit rollback state to master
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
