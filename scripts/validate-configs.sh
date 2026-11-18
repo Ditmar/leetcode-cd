@@ -121,8 +121,20 @@ validate_metadata() {
   local deployed_at
 
   deployed_at="$(jq -r '.deployedAt // empty' "$file")"
-  if [[ ! "$deployed_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})$ ]] ||
-    ! date -u -d "$deployed_at" +%s >/dev/null 2>&1; then
+
+  if ! jq -e -n --arg timestamp "$deployed_at" '
+    try (
+      ($timestamp | capture("^(?<datetime>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?<zone>Z|[+-][0-9]{2}:[0-9]{2})$")) as $parts
+      | (($parts.datetime + "Z" | fromdateiso8601 | todateiso8601) == ($parts.datetime + "Z"))
+        and (
+          $parts.zone == "Z"
+          or (
+            ($parts.zone[1:3] | tonumber) <= 23
+            and ($parts.zone[4:6] | tonumber) <= 59
+          )
+        )
+    ) catch false
+  ' >/dev/null 2>&1; then
     error "$file" "field 'deployedAt' must be a valid ISO-8601 timestamp"
   fi
 
@@ -140,7 +152,7 @@ validate_image_format() {
 
   environment="$(jq -r '.environment // empty' "$file")"
   image="$(jq -r '.image // empty' "$file")"
-  if ! bash scripts/validate-image.sh --format-only "$environment" "$image"; then
+  if ! bash scripts/validate-pr-image.sh --format-only "$environment" "$image"; then
     error "$file" "field 'image' has an invalid reference or tag for '$environment'"
   fi
 }
@@ -150,10 +162,6 @@ main() {
 
   if ! command -v jq >/dev/null 2>&1; then
     printf 'ERROR: jq is required to validate deployment configurations.\n' >&2
-    return 2
-  fi
-  if ! command -v date >/dev/null 2>&1; then
-    printf 'ERROR: date is required to validate deployment timestamps.\n' >&2
     return 2
   fi
   if ! command -v git >/dev/null 2>&1; then

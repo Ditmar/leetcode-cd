@@ -60,7 +60,7 @@ main() {
       return 2
     fi
     printf 'Verifying changed image in %s\n' "$file"
-    RAILWAY_ENVIRONMENT="$environment" bash scripts/validate-image.sh "$image" || errors=$((errors + 1))
+    RAILWAY_ENVIRONMENT="$environment" bash scripts/validate-pr-image.sh "$image" || errors=$((errors + 1))
   done < "$changed_files"
 
   if ((errors > 0)); then
