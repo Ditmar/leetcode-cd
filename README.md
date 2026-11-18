@@ -10,8 +10,8 @@
 ┌─────────────────────┐   build + push     ┌──────────────────────────┐
 │  App repositories   │ ─────────────────► │        Docker Hub        │
 │                     │                    │                          │
-│  api-leetcode       │  image with a      │  ditmar/api-leetcode:0.1.0│
-│  leetcode-spa       │  versioned tag     │  ditmar/leetcode-spa:0.11.0│
+│  api-leetcode       │  image with a      │  api-leetcode:X.Y.Z      │
+│  leetcode-spa       │  versioned tag     │  leetcode-spa:X.Y.Z      │
 └─────────────────────┘                    └───────────────┬──────────┘
                                                            │ tag
                                                            │
@@ -155,17 +155,17 @@ Each `apps/<app>/<env>.json` describes the desired state of one deployment:
 {
   "app": "api-leetcode",
   "environment": "ppd",
-  "image": "ditmar/api-leetcode:0.1.0",
+  "image": "ditmar/api-leetcode:X.Y.Z",
   "railwayProject": "leetcode",
   "railwayProjectId": "xxxx",
   "railwayEnvironment": "ppd",
   "railwayEnvironmentId": "xxxx",
   "railwayService": "api-leetcode",
   "railwayServiceId": "xxxx",
-  "deployedAt": "2026-06-30T22:30:00Z",
-  "deployedBy": "PCilverio",
-  "commitSha": "pending",
-  "notes": "Initial pre-production slot setup for API service deployment"
+  "deployedAt": "YYYY-MM-DDTHH:MM:SSZ",
+  "deployedBy": "<github-user>",
+  "commitSha": "<short-sha>",
+  "notes": "Free text about this deployment"
 }
 ```
 
@@ -360,7 +360,7 @@ done
 | Docker may cache `latest` and not update                   | "Successful" deploys that updated nothing    |
 | No audit trail                                             | You cannot tell what changed between deploys |
 
-**Tag convention in this repo:** semantic versions, `MAJOR.MINOR.PATCH` (for example `0.1.0`, `0.11.0`). `validate-image.sh`, `promote.sh` and `promote.yml` block `latest` in `ppd` and `prod`.
+**Tag convention in this repo:** semantic versions, `MAJOR.MINOR.PATCH` (for example `1.2.3`). `validate-image.sh`, `promote.sh` and `promote.yml` block `latest` in `ppd` and `prod`.
 
 ---
 

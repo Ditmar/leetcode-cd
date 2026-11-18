@@ -84,17 +84,17 @@ Each file describes **exactly** what is deployed in that environment:
 {
   "app": "api-leetcode",
   "environment": "ppd",
-  "image": "ditmar/api-leetcode:0.1.0",
+  "image": "ditmar/api-leetcode:X.Y.Z",
   "railwayProject": "leetcode",
   "railwayProjectId": "...",
   "railwayEnvironment": "ppd",
   "railwayEnvironmentId": "...",
   "railwayService": "api-leetcode",
   "railwayServiceId": "...",
-  "deployedAt": "2026-06-30T22:30:00Z",
-  "deployedBy": "PCilverio",
-  "commitSha": "pending",
-  "notes": "Initial pre-production slot setup for API service deployment"
+  "deployedAt": "YYYY-MM-DDTHH:MM:SSZ",
+  "deployedBy": "<github-user>",
+  "commitSha": "<short-sha>",
+  "notes": "Free text about this deployment"
 }
 ```
 
@@ -254,7 +254,7 @@ Only edits `prod.json` locally and shows a diff. **You** commit and open the PR.
 
 ### Tag convention in this repo
 
-Semantic versions, like the ones used today: `0.1.0`, `0.11.0`.
+Semantic versions, for example `1.2.3`.
 
 Format: `MAJOR.MINOR.PATCH`. Blocked by `validate-image.sh`, `promote.sh` and `promote.yml`.
 

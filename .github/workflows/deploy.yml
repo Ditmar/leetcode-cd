@@ -1,8 +1,8 @@
 name: Deploy to Railway
 
 # ── Triggers ──────────────────────────────────────────────────────────────────
-# Se dispara cuando se hace merge a main de un PR que modifica un archivo de ambiente.
-# También puede dispararse manualmente con elección de ambiente.
+# Triggered when a PR that modifies an environment file is merged to master.
+# It can also be triggered manually, choosing the app and the environment.
 on:
   push:
     branches: [master]
@@ -13,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       app:
-        description: "Nombre de la app (ej: my-app)"
+        description: "App name (e.g. api-leetcode)"
         required: true
         type: string
       environment:
@@ -57,7 +57,7 @@ jobs:
             exit 0
           fi
 
-          # Push a main: detectar archivos JSON que cambiaron
+          # Push to master: detect which JSON files changed
           CHANGED_FILES=$(git diff --name-only HEAD~1 HEAD -- 'apps/**/*.json' 2>/dev/null || \
                           git diff --name-only HEAD^ HEAD -- 'apps/**/*.json')
 
@@ -187,7 +187,7 @@ jobs:
         if: success()
         run: |
           IMAGE=$(jq -r '.image' "${{ matrix.config_file }}")
-          echo "✅ Deployed $IMAGE to ${{ matrix.environment }} successfully"
+          echo "✅ Deployment of $IMAGE to ${{ matrix.environment }} requested (verify the final status in Railway)"
           # Aquí podrías agregar notificación a Slack/Teams:
           # curl -X POST ${{ secrets.SLACK_WEBHOOK }} -d '{"text": "..."}'
 
