@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 set -uo pipefail
 
@@ -68,10 +67,26 @@ COUNT=0
 TARGET_IMAGE=""
 TARGET_COMMIT=""
 TARGET_SUBJECT=""
+# Imágenes de las que ya se hizo rollback (una por línea). Nunca se eligen como destino.
+ROLLED_BACK_FROM=""
 
 while IFS= read -r COMMIT; do
   [[ -n "$COMMIT" ]] || continue
   COUNT=$((COUNT + 1))
+
+  # El workflow de rollback deja en su commit la línea "Imagen anterior: X".
+  # Esa imagen X es la que se revirtió, así que no debe volver a elegirse.
+  # Los commits más nuevos se leen primero, por lo que X se registra antes de
+  # llegar al commit donde X fue desplegada.
+  if [[ -z "$TARGET_IMAGE" ]]; then
+    COMMIT_MESSAGE=$(git log -1 --format=%B "$COMMIT" 2>/dev/null | tr -d '\r' || true)
+    if [[ "${COMMIT_MESSAGE%%$'\n'*}" == "rollback("* ]]; then
+      ROLLED_BACK_IMAGE=$(printf '%s\n' "$COMMIT_MESSAGE" | sed -n 's/^Imagen anterior: //p' | head -n 1)
+      if [[ -n "$ROLLED_BACK_IMAGE" ]]; then
+        ROLLED_BACK_FROM+="$ROLLED_BACK_IMAGE"$'\n'
+      fi
+    fi
+  fi
 
   COMMIT_JSON=$(git show "$COMMIT:$FILE" 2>/dev/null) || {
     echo "Aviso: no se pudo leer JSON en $COMMIT; se omite." >&2
@@ -91,6 +106,12 @@ while IFS= read -r COMMIT; do
   [[ "$CANDIDATE_REPOSITORY" == "$CURRENT_REPOSITORY" ]] || continue
 
   if [[ -z "$TARGET_IMAGE" ]]; then
+    # Saltar imágenes de las que ya se hizo rollback (p. ej. la versión rota).
+    if grep -Fxq -- "$CANDIDATE" <<< "$ROLLED_BACK_FROM"; then
+      echo "Aviso: se omite '$CANDIDATE' porque ya se hizo rollback desde esa imagen." >&2
+      continue
+    fi
+
     # La primera imagen válida distinta de la actual es el objetivo.
     TARGET_IMAGE=$CANDIDATE
     TARGET_COMMIT=$COMMIT

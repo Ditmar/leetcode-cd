@@ -1,4 +1,3 @@
-
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -176,5 +175,86 @@ grep -Fq "no se encontró una imagen anterior distinta" "$TEMP_DIR/no-previous-i
   fail "El error no explica claramente que no se encontró una imagen anterior distinta"
 
 pass "Falla claramente cuando no existe una imagen anterior distinta"
+
+# Caso 9: un segundo rollback no debe volver a la versión de la que
+# ya se hizo rollback. Historial: 1.0.0 -> 1.1.0 -> 1.2.0 -> rollback
+# a 1.1.0 (commit del workflow) -> el script debe devolver 1.0.0, no 1.2.0.
+new_repo() {
+  local dir="$TEMP_DIR/$1"
+  mkdir -p "$dir"
+  git -C "$dir" init -q
+  git -C "$dir" config user.name "CD-001 Tests"
+  git -C "$dir" config user.email "cd001-tests@example.invalid"
+  printf '%s' "$dir"
+}
+
+# Mismo formato de mensaje que genera .github/workflows/rollback.yml.
+commit_rollback() {
+  local repo=$1 from=$2 to=$3
+  git -C "$repo" add app.json
+  git -C "$repo" commit -q -m "$(printf '%s\n\n%s\n%s\n%s' \
+    "rollback(app/ppd): → $to" \
+    "Rollback ejecutado por: tester" \
+    "Razón: prueba" \
+    "Imagen anterior: $from")"
+}
+
+ROLLBACK_REPO=$(new_repo rollback-twice-repo)
+printf '%s\n' '{"image":"ditmar/app:1.0.0"}' > "$ROLLBACK_REPO/app.json"
+git -C "$ROLLBACK_REPO" add app.json
+git -C "$ROLLBACK_REPO" commit -qm "deploy 1.0.0"
+COMMIT_100=$(git -C "$ROLLBACK_REPO" rev-parse HEAD)
+
+printf '%s\n' '{"image":"ditmar/app:1.1.0"}' > "$ROLLBACK_REPO/app.json"
+git -C "$ROLLBACK_REPO" add app.json
+git -C "$ROLLBACK_REPO" commit -qm "deploy 1.1.0"
+
+printf '%s\n' '{"image":"ditmar/app:1.2.0"}' > "$ROLLBACK_REPO/app.json"
+git -C "$ROLLBACK_REPO" add app.json
+git -C "$ROLLBACK_REPO" commit -qm "deploy 1.2.0"
+
+printf '%s\n' '{"image":"ditmar/app:1.1.0","notes":"ROLLBACK"}' > "$ROLLBACK_REPO/app.json"
+commit_rollback "$ROLLBACK_REPO" "ditmar/app:1.2.0" "ditmar/app:1.1.0"
+
+OUTPUT=$(cd "$ROLLBACK_REPO" && bash "$SCRIPT" app.json)
+grep -Fxq 'image=ditmar/app:1.0.0' <<< "$OUTPUT" ||
+  fail "Tras un rollback 1.2.0 -> 1.1.0, un segundo rollback no devolvió 1.0.0 (devolvió: $(grep '^image=' <<< "$OUTPUT"))"
+grep -Fxq "commit=$COMMIT_100" <<< "$OUTPUT" ||
+  fail "El segundo rollback no devolvió el commit que introdujo 1.0.0"
+pass "Un segundo rollback no vuelve a la versión de la que ya se hizo rollback"
+
+# Caso 10: si después del rollback se despliega una versión nueva (1.3.0),
+# un rollback desde ahí SÍ puede volver a 1.1.0 (la 1.2.0 sigue descartada).
+printf '%s\n' '{"image":"ditmar/app:1.3.0"}' > "$ROLLBACK_REPO/app.json"
+git -C "$ROLLBACK_REPO" add app.json
+git -C "$ROLLBACK_REPO" commit -qm "deploy 1.3.0"
+
+OUTPUT=$(cd "$ROLLBACK_REPO" && bash "$SCRIPT" app.json)
+grep -Fxq 'image=ditmar/app:1.1.0' <<< "$OUTPUT" ||
+  fail "Tras desplegar 1.3.0, el rollback no devolvió 1.1.0 (devolvió: $(grep '^image=' <<< "$OUTPUT"))"
+pass "Tras una versión nueva, el rollback vuelve a la última versión buena (no a la descartada)"
+
+# Caso 11: si lo único anterior es la imagen de la que se hizo rollback,
+# debe fallar con código 2 en vez de redesplegarla.
+ONLY_BAD_REPO=$(new_repo only-rolled-back-repo)
+printf '%s\n' '{"image":"ditmar/app:2.0.0"}' > "$ONLY_BAD_REPO/app.json"
+git -C "$ONLY_BAD_REPO" add app.json
+git -C "$ONLY_BAD_REPO" commit -qm "deploy 2.0.0"
+
+printf '%s\n' '{"image":"ditmar/app:2.1.0"}' > "$ONLY_BAD_REPO/app.json"
+git -C "$ONLY_BAD_REPO" add app.json
+git -C "$ONLY_BAD_REPO" commit -qm "deploy 2.1.0"
+
+printf '%s\n' '{"image":"ditmar/app:2.0.0"}' > "$ONLY_BAD_REPO/app.json"
+commit_rollback "$ONLY_BAD_REPO" "ditmar/app:2.1.0" "ditmar/app:2.0.0"
+
+set +e
+OUTPUT=$(cd "$ONLY_BAD_REPO" && bash "$SCRIPT" app.json 2>"$TEMP_DIR/only-bad-error.log")
+STATUS=$?
+set -e
+
+[[ $STATUS -eq 2 ]] ||
+  fail "Esperaba código 2 cuando lo único anterior es la imagen de la que se hizo rollback (código: $STATUS)"
+pass "No redespliega la única imagen anterior si fue la de la que se hizo rollback"
 
 printf '\nTodas las pruebas iniciales pasaron.\n'
