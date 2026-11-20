@@ -286,6 +286,8 @@ The workflow validates the target image, updates the JSON, requests the deploy t
 - `manual-tag` keeps the current image name and swaps only the tag.
 - `git-history` takes the second most recent commit that touched the file. Deploy metadata commits also touch it, so it may pick the image that is already running. Read the "Rollback plan" step before relying on it.
 
+The rollback commit is pushed with `scripts/git-push-with-retry.sh`. Because the push uses the `GITHUB_TOKEN`, it does not trigger `deploy.yml` again. If the push fails, Railway already runs the rollback image but `master` still shows the old one: fix the JSON with a PR (manual option below).
+
 ### Manual option: through git and a PR
 
 ```bash
@@ -304,6 +306,24 @@ gh pr create --base master
 ```
 
 Use the `image` of the commit you restore, not a count of commits back: metadata commits also change the file.
+
+### Git writes and concurrency
+
+`deploy.yml`, `rollback.yml` and `promote.yml` share the concurrency group `railway-cd-git-write` (`cancel-in-progress: false`), so only one of them writes to git at a time. Direct pushes to `master` (deploy metadata and rollback state) go through `scripts/git-push-with-retry.sh`: if `master` moved, it fetches, rebases and retries up to 5 times; on a real conflict it aborts the rebase and fails without changing `master`.
+
+Note: GitHub keeps only one **pending** run per concurrency group. If a third run arrives while one is running and another is waiting, the waiting run is cancelled (not failed) and must be run again.
+
+### Decision: how deploy state is kept (CD-011)
+
+Options considered: (a) a ruleset that lets only the bot push metadata commits, (b) a separate state branch, (c) a PR for every change.
+
+**Decision: (a).** The JSON files on `master` stay the single source of truth, `deploy.yml` keeps working as it is, and rollback stays fast. (b) would move the state away from the files `deploy.yml` reads, and (c) would turn every deploy and every rollback into a PR that someone must merge.
+
+Repository configuration (done by a repository admin):
+
+- Ruleset on `master`: require a pull request with at least one approval, require status checks, block force pushes and deletions.
+- Bypass list: only the identity the workflows push with (GitHub Actions / `github-actions[bot]`; if the ruleset does not offer it, a dedicated GitHub App whose token the workflows use). No user or team bypass.
+- Environments `ppd` and `prod`: required reviewers and deployment branches limited to `master`. This closes the risk that someone edits a workflow on another branch and runs it to use the bot bypass: jobs with `environment: ppd/prod` cannot run from any branch except `master`, and changes to `master` (including `.github/workflows/`) need a reviewed PR.
 
 ---
 
