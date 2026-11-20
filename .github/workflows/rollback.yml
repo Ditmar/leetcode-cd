@@ -42,10 +42,15 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}   # Requiere aprobación en prod
 
+    concurrency:
+      group: railway-cd-git-write
+      cancel-in-progress: false
+
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 20  # Necesitamos historial para git-history strategy
+          ref: master
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
@@ -155,7 +160,7 @@ jobs:
         env:
           RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
 
-      - name: Commit rollback state to main
+      - name: Commit rollback state to master
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
@@ -166,7 +171,9 @@ jobs:
             "Razón: ${{ inputs.reason }}" \
             "Imagen anterior: ${{ steps.current.outputs.current_image }}")
           git commit -m "$COMMIT_MSG"
-          git push
+
+          chmod +x scripts/git-push-with-retry.sh
+          ./scripts/git-push-with-retry.sh master
 
       - name: Summary
         run: |

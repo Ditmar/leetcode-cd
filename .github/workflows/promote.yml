@@ -35,6 +35,10 @@ jobs:
     name: Promote ${{ inputs.app }} (${{ inputs.from_environment }} → ${{ inputs.to_environment }})
     runs-on: ubuntu-latest
 
+    concurrency:
+      group: railway-cd-git-write
+      cancel-in-progress: false
+
     steps:
       - uses: actions/checkout@v4
         with:
