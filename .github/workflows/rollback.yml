@@ -48,10 +48,15 @@ jobs:
       TARGET_TAG: ${{ inputs.target_tag }}
       ROLLBACK_REASON: ${{ inputs.reason }}
 
+    concurrency:
+      group: railway-cd-git-write
+      cancel-in-progress: false
+
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 20  # Necesitamos historial para git-history strategy
+          ref: master
+          fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
@@ -201,7 +206,9 @@ jobs:
             "Razón: $ROLLBACK_REASON" \
             "Imagen anterior: $CURRENT_IMAGE")
           git commit -m "$COMMIT_MSG"
-          git push
+
+          chmod +x scripts/git-push-with-retry.sh
+          ./scripts/git-push-with-retry.sh master
         env:
           CURRENT_CONFIG_FILE: ${{ steps.current.outputs.config_file }}
           CURRENT_IMAGE: ${{ steps.current.outputs.current_image }}

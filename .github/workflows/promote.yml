@@ -40,6 +40,10 @@ jobs:
       TO_ENVIRONMENT: ${{ inputs.to_environment }}
       PROMOTION_NOTES: ${{ inputs.notes }}
 
+    concurrency:
+      group: railway-cd-git-write
+      cancel-in-progress: false
+
     steps:
       - uses: actions/checkout@v4
         with:
