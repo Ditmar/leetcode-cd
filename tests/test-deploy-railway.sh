@@ -60,16 +60,21 @@ write_sample_config() {
   local target="$1"
   local health_url="$2"
   local include_health="${3:-true}"
+  local env_name="${4:-prod}"
+  local railway_env="production"
+  if [[ "$env_name" != "prod" ]]; then
+    railway_env="$env_name"
+  fi
 
   if [[ "$include_health" == "true" ]]; then
     cat > "$target" <<EOF
 {
   "app": "api-leetcode",
-  "environment": "prod",
+  "environment": "$env_name",
   "image": "ditmar/api-leetcode:0.2.0",
   "railwayProject": "leetcode",
   "railwayProjectId": "824cf489-b077-4bb9-ab4c-af7e72674f5f",
-  "railwayEnvironment": "production",
+  "railwayEnvironment": "$railway_env",
   "railwayEnvironmentId": "406599c5-da49-4a91-b3f0-5a235ada2082",
   "railwayService": "api-leetcode",
   "railwayServiceId": "d524ac17-cab8-4f46-ad00-cb6f3975a244",
@@ -81,14 +86,14 @@ write_sample_config() {
 }
 EOF
   else
-    cat > "$target" <<'EOF'
+    cat > "$target" <<EOF
 {
   "app": "api-leetcode",
-  "environment": "prod",
+  "environment": "$env_name",
   "image": "ditmar/api-leetcode:0.2.0",
   "railwayProject": "leetcode",
   "railwayProjectId": "824cf489-b077-4bb9-ab4c-af7e72674f5f",
-  "railwayEnvironment": "production",
+  "railwayEnvironment": "$railway_env",
   "railwayEnvironmentId": "406599c5-da49-4a91-b3f0-5a235ada2082",
   "railwayService": "api-leetcode",
   "railwayServiceId": "d524ac17-cab8-4f46-ad00-cb6f3975a244",
@@ -138,7 +143,15 @@ if [[ -n "$cfg_file" && -f "$cfg_file" ]]; then
 fi
 
 if [[ "$url" == *"/graphql/v2"* ]]; then
+  if [[ "$payload" == *"serviceInstance("* ]]; then
+    jq -n --arg img "${MOCK_PREVIOUS_IMAGE:-}" '{data:{serviceInstance:{source:{image:$img}}}}'
+    exit 0
+  fi
+
   if [[ "$payload" == *"serviceInstanceUpdate"* ]]; then
+    if [[ -n "${MOCK_UPDATES_LOG:-}" ]]; then
+      printf '%s\n' "$payload" | jq -r '.variables.image' >> "$MOCK_UPDATES_LOG"
+    fi
     if [[ "${MOCK_UPDATE_FAIL:-false}" == "true" ]]; then
       printf '{"message":"Internal Server Error"}\n'
       printf 'curl: (22) The requested URL returned error: 500\n' >&2
@@ -149,6 +162,9 @@ if [[ "$url" == *"/graphql/v2"* ]]; then
   fi
 
   if [[ "$payload" == *"serviceInstanceDeploy"* ]]; then
+    if [[ -n "${MOCK_DEPLOYS_LOG:-}" ]]; then
+      printf 'deploy\n' >> "$MOCK_DEPLOYS_LOG"
+    fi
     if [[ "${MOCK_DEPLOY_FAIL:-false}" == "true" ]]; then
       printf '{"errors":[{"message":"Deploy trigger rejected"}]}\n'
       exit 0
@@ -751,6 +767,243 @@ else
 fi
 assert_file_unchanged "$c14/cfg.json" "$c14/cfg.orig" "REMOVED deployment leaves JSON metadata untouched"
 assert_contains "$(cat "$c14/summary.md")" "REMOVED" "REMOVED summary shows REMOVED status"
+
+# =============================================================================
+# 15. Auto-rollback en prod cuando el despliegue termina en CRASHED
+# =============================================================================
+c15=$(run_case "prod_auto_rollback_crashed")
+write_sample_config "$c15/cfg.json" "https://api.example.com/health" "true" "prod"
+cp "$c15/cfg.json" "$c15/cfg.orig"
+cat > "$c15/deployments.jsonl" <<'EOF'
+{"data":{"deployments":{"edges":[{"node":{"id":"dep-old-001","status":"SUCCESS","createdAt":"2026-11-01T00:00:00Z"}}]}}}
+{"data":{"deployments":{"edges":[{"node":{"id":"dep-crash-015","status":"CRASHED","createdAt":"2026-11-22T10:00:00Z"}}]}}}
+EOF
+: > "$c15/args.log"
+: > "$c15/auth.log"
+: > "$c15/health.log"
+: > "$c15/updates.log"
+: > "$c15/deploys.log"
+: > "$c15/summary.md"
+
+out=$(
+  PATH="$c15/bin:$PATH" \
+  MOCK_ARGS_LOG="$c15/args.log" \
+  MOCK_AUTH_LOG="$c15/auth.log" \
+  MOCK_HEALTH_LOG="$c15/health.log" \
+  MOCK_UPDATES_LOG="$c15/updates.log" \
+  MOCK_DEPLOYS_LOG="$c15/deploys.log" \
+  MOCK_POLL_COUNTER="$c15/poll.count" \
+  MOCK_DEPLOYMENTS_FILE="$c15/deployments.jsonl" \
+  MOCK_PREVIOUS_IMAGE="ditmar/api-leetcode:0.1.0" \
+  RAILWAY_API_TOKEN="secret-railway-token-123" \
+  SKIP_IMAGE_VALIDATION="true" \
+  DEPLOY_TIMEOUT_SECONDS="30" \
+  DEPLOY_POLL_INTERVAL="0" \
+  GITHUB_STEP_SUMMARY="$c15/summary.md" \
+  bash "$SCRIPT" "$c15/cfg.json" 2>&1
+)
+rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  pass "Prod CRASHED with auto-rollback still fails the workflow"
+else
+  fail "Prod CRASHED with auto-rollback must still fail the workflow"
+fi
+updates_c15=$(tr -d '\r' < "$c15/updates.log" | tr '\n' ',')
+if [[ "$updates_c15" == "ditmar/api-leetcode:0.2.0,ditmar/api-leetcode:0.1.0," ]]; then
+  pass "Prod CRASHED auto-rollback restores previous image in Railway"
+else
+  fail "Expected updates 0.2.0 then 0.1.0, got: $updates_c15"
+fi
+if [[ "$(wc -l < "$c15/deploys.log" | tr -d ' ')" == "2" ]]; then
+  pass "Prod CRASHED auto-rollback triggers second Railway deploy"
+else
+  fail "Expected 2 Railway deploy triggers on prod auto-rollback"
+fi
+assert_file_unchanged "$c15/cfg.json" "$c15/cfg.orig" "Prod CRASHED auto-rollback leaves JSON metadata untouched"
+summary_c15=$(cat "$c15/summary.md")
+assert_contains "$summary_c15" "Auto-Rollback" "Prod CRASHED summary includes Auto-Rollback row"
+assert_contains "$summary_c15" "TRIGGERED -> ditmar/api-leetcode:0.1.0" "Prod CRASHED summary shows rolled-back image"
+
+# =============================================================================
+# 16. Auto-rollback en prod cuando falla el health check tras SUCCESS
+# =============================================================================
+c16=$(run_case "prod_auto_rollback_health")
+write_sample_config "$c16/cfg.json" "https://api.example.com/health" "true" "prod"
+cp "$c16/cfg.json" "$c16/cfg.orig"
+cat > "$c16/deployments.jsonl" <<'EOF'
+{"data":{"deployments":{"edges":[{"node":{"id":"dep-old-001","status":"SUCCESS","createdAt":"2026-11-01T00:00:00Z"}}]}}}
+{"data":{"deployments":{"edges":[{"node":{"id":"dep-unhealthy-016","status":"SUCCESS","createdAt":"2026-11-22T10:00:00Z"}}]}}}
+EOF
+: > "$c16/args.log"
+: > "$c16/auth.log"
+: > "$c16/health.log"
+: > "$c16/updates.log"
+: > "$c16/deploys.log"
+: > "$c16/summary.md"
+
+out=$(
+  PATH="$c16/bin:$PATH" \
+  MOCK_ARGS_LOG="$c16/args.log" \
+  MOCK_AUTH_LOG="$c16/auth.log" \
+  MOCK_HEALTH_LOG="$c16/health.log" \
+  MOCK_UPDATES_LOG="$c16/updates.log" \
+  MOCK_DEPLOYS_LOG="$c16/deploys.log" \
+  MOCK_POLL_COUNTER="$c16/poll.count" \
+  MOCK_DEPLOYMENTS_FILE="$c16/deployments.jsonl" \
+  MOCK_PREVIOUS_IMAGE="ditmar/api-leetcode:0.1.0" \
+  MOCK_HEALTH_FAIL="true" \
+  RAILWAY_API_TOKEN="secret-railway-token-123" \
+  SKIP_IMAGE_VALIDATION="true" \
+  DEPLOY_TIMEOUT_SECONDS="30" \
+  DEPLOY_POLL_INTERVAL="0" \
+  HEALTH_CHECK_RETRY_DELAY="0" \
+  GITHUB_STEP_SUMMARY="$c16/summary.md" \
+  bash "$SCRIPT" "$c16/cfg.json" 2>&1
+)
+rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  pass "Prod unhealthy /health with auto-rollback still fails the workflow"
+else
+  fail "Prod unhealthy /health must still fail the workflow"
+fi
+updates_c16=$(tr -d '\r' < "$c16/updates.log" | tr '\n' ',')
+if [[ "$updates_c16" == "ditmar/api-leetcode:0.2.0,ditmar/api-leetcode:0.1.0," ]]; then
+  pass "Prod unhealthy /health auto-rollback restores previous image"
+else
+  fail "Expected updates 0.2.0 then 0.1.0, got: $updates_c16"
+fi
+assert_file_unchanged "$c16/cfg.json" "$c16/cfg.orig" "Prod unhealthy /health auto-rollback leaves JSON untouched"
+assert_contains "$(cat "$c16/summary.md")" "TRIGGERED -> ditmar/api-leetcode:0.1.0" "Prod unhealthy /health summary records auto-rollback"
+
+# =============================================================================
+# 17. ppd NO ejecuta auto-rollback cuando falla
+# =============================================================================
+c17=$(run_case "ppd_no_auto_rollback")
+write_sample_config "$c17/cfg.json" "https://api-ppd.example.com/health" "true" "ppd"
+cp "$c17/cfg.json" "$c17/cfg.orig"
+cat > "$c17/deployments.jsonl" <<'EOF'
+{"data":{"deployments":{"edges":[{"node":{"id":"dep-old-001","status":"SUCCESS","createdAt":"2026-11-01T00:00:00Z"}}]}}}
+{"data":{"deployments":{"edges":[{"node":{"id":"dep-crash-017","status":"CRASHED","createdAt":"2026-11-22T10:00:00Z"}}]}}}
+EOF
+: > "$c17/args.log"
+: > "$c17/auth.log"
+: > "$c17/health.log"
+: > "$c17/updates.log"
+: > "$c17/deploys.log"
+: > "$c17/summary.md"
+
+out=$(
+  PATH="$c17/bin:$PATH" \
+  MOCK_ARGS_LOG="$c17/args.log" \
+  MOCK_AUTH_LOG="$c17/auth.log" \
+  MOCK_HEALTH_LOG="$c17/health.log" \
+  MOCK_UPDATES_LOG="$c17/updates.log" \
+  MOCK_DEPLOYS_LOG="$c17/deploys.log" \
+  MOCK_POLL_COUNTER="$c17/poll.count" \
+  MOCK_DEPLOYMENTS_FILE="$c17/deployments.jsonl" \
+  MOCK_PREVIOUS_IMAGE="ditmar/api-leetcode:0.1.0" \
+  RAILWAY_API_TOKEN="secret-railway-token-123" \
+  SKIP_IMAGE_VALIDATION="true" \
+  DEPLOY_TIMEOUT_SECONDS="30" \
+  DEPLOY_POLL_INTERVAL="0" \
+  GITHUB_STEP_SUMMARY="$c17/summary.md" \
+  bash "$SCRIPT" "$c17/cfg.json" 2>&1
+)
+rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  pass "ppd CRASHED fails cleanly"
+else
+  fail "ppd CRASHED should fail"
+fi
+if [[ "$(wc -l < "$c17/updates.log" | tr -d ' ')" == "1" ]]; then
+  pass "ppd CRASHED does NOT trigger auto-rollback"
+else
+  fail "ppd CRASHED should only call serviceInstanceUpdate once"
+fi
+assert_not_contains "$(cat "$c17/summary.md")" "Auto-Rollback" "ppd summary does not show Auto-Rollback"
+
+# =============================================================================
+# 18. prod omite auto-rollback si la imagen previa es igual a la actual
+# =============================================================================
+c18=$(run_case "prod_same_image_skip_rollback")
+write_sample_config "$c18/cfg.json" "https://api.example.com/health" "true" "prod"
+cat > "$c18/deployments.jsonl" <<'EOF'
+{"data":{"deployments":{"edges":[{"node":{"id":"dep-old-001","status":"SUCCESS","createdAt":"2026-11-01T00:00:00Z"}}]}}}
+{"data":{"deployments":{"edges":[{"node":{"id":"dep-crash-018","status":"CRASHED","createdAt":"2026-11-22T10:00:00Z"}}]}}}
+EOF
+: > "$c18/args.log"
+: > "$c18/auth.log"
+: > "$c18/health.log"
+: > "$c18/updates.log"
+: > "$c18/deploys.log"
+: > "$c18/summary.md"
+
+out=$(
+  PATH="$c18/bin:$PATH" \
+  MOCK_ARGS_LOG="$c18/args.log" \
+  MOCK_AUTH_LOG="$c18/auth.log" \
+  MOCK_HEALTH_LOG="$c18/health.log" \
+  MOCK_UPDATES_LOG="$c18/updates.log" \
+  MOCK_DEPLOYS_LOG="$c18/deploys.log" \
+  MOCK_POLL_COUNTER="$c18/poll.count" \
+  MOCK_DEPLOYMENTS_FILE="$c18/deployments.jsonl" \
+  MOCK_PREVIOUS_IMAGE="ditmar/api-leetcode:0.2.0" \
+  RAILWAY_API_TOKEN="secret-railway-token-123" \
+  SKIP_IMAGE_VALIDATION="true" \
+  DEPLOY_TIMEOUT_SECONDS="30" \
+  DEPLOY_POLL_INTERVAL="0" \
+  GITHUB_STEP_SUMMARY="$c18/summary.md" \
+  bash "$SCRIPT" "$c18/cfg.json" 2>&1
+)
+rc=$?
+if [[ "$rc" -ne 0 && "$(wc -l < "$c18/updates.log" | tr -d ' ')" == "1" ]]; then
+  pass "Prod skips auto-rollback when previous image equals current image"
+else
+  fail "Prod should skip auto-rollback when previous image equals current image"
+fi
+assert_contains "$(cat "$c18/summary.md")" "SKIPPED (same image)" "Same-image rollback skip is logged in summary"
+
+# =============================================================================
+# 19. AUTO_ROLLBACK_PROD=false desactiva auto-rollback en prod
+# =============================================================================
+c19=$(run_case "prod_rollback_disabled")
+write_sample_config "$c19/cfg.json" "https://api.example.com/health" "true" "prod"
+cat > "$c19/deployments.jsonl" <<'EOF'
+{"data":{"deployments":{"edges":[{"node":{"id":"dep-old-001","status":"SUCCESS","createdAt":"2026-11-01T00:00:00Z"}}]}}}
+{"data":{"deployments":{"edges":[{"node":{"id":"dep-crash-019","status":"CRASHED","createdAt":"2026-11-22T10:00:00Z"}}]}}}
+EOF
+: > "$c19/args.log"
+: > "$c19/auth.log"
+: > "$c19/health.log"
+: > "$c19/updates.log"
+: > "$c19/deploys.log"
+: > "$c19/summary.md"
+
+out=$(
+  PATH="$c19/bin:$PATH" \
+  MOCK_ARGS_LOG="$c19/args.log" \
+  MOCK_AUTH_LOG="$c19/auth.log" \
+  MOCK_HEALTH_LOG="$c19/health.log" \
+  MOCK_UPDATES_LOG="$c19/updates.log" \
+  MOCK_DEPLOYS_LOG="$c19/deploys.log" \
+  MOCK_POLL_COUNTER="$c19/poll.count" \
+  MOCK_DEPLOYMENTS_FILE="$c19/deployments.jsonl" \
+  MOCK_PREVIOUS_IMAGE="ditmar/api-leetcode:0.1.0" \
+  AUTO_ROLLBACK_PROD="false" \
+  RAILWAY_API_TOKEN="secret-railway-token-123" \
+  SKIP_IMAGE_VALIDATION="true" \
+  DEPLOY_TIMEOUT_SECONDS="30" \
+  DEPLOY_POLL_INTERVAL="0" \
+  GITHUB_STEP_SUMMARY="$c19/summary.md" \
+  bash "$SCRIPT" "$c19/cfg.json" 2>&1
+)
+rc=$?
+if [[ "$rc" -ne 0 && "$(wc -l < "$c19/updates.log" | tr -d ' ')" == "1" ]]; then
+  pass "AUTO_ROLLBACK_PROD=false disables auto-rollback in prod"
+else
+  fail "AUTO_ROLLBACK_PROD=false should disable auto-rollback in prod"
+fi
+assert_contains "$(cat "$c19/summary.md")" "DISABLED" "Disabled auto-rollback is recorded in summary"
 
 # =============================================================================
 # Resumen

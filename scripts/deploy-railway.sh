@@ -121,12 +121,18 @@ RAILWAY_POLL_MAX_ERRORS="${RAILWAY_POLL_MAX_ERRORS:-3}"
 HEALTH_CHECK_TIMEOUT="${HEALTH_CHECK_TIMEOUT:-10}"
 HEALTH_CHECK_RETRIES="${HEALTH_CHECK_RETRIES:-5}"
 HEALTH_CHECK_RETRY_DELAY="${HEALTH_CHECK_RETRY_DELAY:-3}"
+AUTO_ROLLBACK_PROD="${AUTO_ROLLBACK_PROD:-true}"
+
+is_prod_environment() {
+  [[ "$ENVIRONMENT" == "prod" || "$RAILWAY_ENVIRONMENT" == "production" ]]
+}
 
 # ── Helper: publicar resumen en GitHub Actions Step Summary ──────────────────
 write_step_summary() {
   local deploy_id="$1"
   local deploy_status="$2"
   local health_result="$3"
+  local rollback_result="${4:-}"
 
   if [[ -z "${GITHUB_STEP_SUMMARY:-}" ]]; then
     return 0
@@ -144,8 +150,12 @@ write_step_summary() {
 | Railway Status | \`${deploy_status}\` |
 | Health URL | \`${HEALTH_URL}\` |
 | Health Check | \`${health_result}\` |
-
 EOF
+
+  if [[ -n "$rollback_result" ]]; then
+    printf "| Auto-Rollback | \`%s\` |\n" "$rollback_result" >> "$GITHUB_STEP_SUMMARY"
+  fi
+  printf '\n' >> "$GITHUB_STEP_SUMMARY"
 }
 
 # ── Dry run ──────────────────────────────────────────────────────────────────
@@ -237,7 +247,126 @@ fetch_latest_deployment() {
   railway_graphql "$deployments_query"
 }
 
-# ── Snapshot del último deployment antes de disparar uno nuevo ───────────────
+# ── Helper: consultar imagen actual configurada en Railway ───────────────────
+fetch_current_service_image() {
+  local instance_query
+  local instance_response
+  instance_query=$(jq -n \
+    --arg serviceId "$RAILWAY_SERVICE_ID" \
+    --arg environmentId "$RAILWAY_ENVIRONMENT_ID" \
+    '{
+      query: "query ServiceInstanceSource($serviceId: String!, $environmentId: String!) { serviceInstance(serviceId: $serviceId, environmentId: $environmentId) { source { image } } }",
+      variables: {
+        serviceId: $serviceId,
+        environmentId: $environmentId
+      }
+    }')
+
+  if ! instance_response=$(railway_graphql "$instance_query"); then
+    return 1
+  fi
+
+  printf '%s\n' "$instance_response" | jq -r '.data.serviceInstance.source.image // empty'
+}
+
+# ── Helper: actualizar imagen y disparar deploy en Railway ───────────────────
+update_service_image() {
+  local target_image="$1"
+  local update_query
+  local update_response
+  local update_success
+
+  update_query=$(jq -n \
+    --arg serviceId "$RAILWAY_SERVICE_ID" \
+    --arg environmentId "$RAILWAY_ENVIRONMENT_ID" \
+    --arg image "$target_image" \
+    '{
+      query: "mutation ServiceInstanceUpdate($serviceId: String!, $environmentId: String!, $image: String!) { serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: { source: { image: $image } }) }",
+      variables: {
+        serviceId: $serviceId,
+        environmentId: $environmentId,
+        image: $image
+      }
+    }')
+
+  if ! update_response=$(railway_graphql "$update_query"); then
+    return 1
+  fi
+
+  update_success=$(printf '%s\n' "$update_response" | jq -r '.data.serviceInstanceUpdate // empty')
+  if [[ "$update_success" != "true" ]]; then
+    log_error "Railway no confirmó la actualización de imagen a $target_image."
+    log_error "Respuesta: $update_response"
+    return 1
+  fi
+}
+
+trigger_service_deploy() {
+  local deploy_query
+  local deploy_response
+  local deploy_success
+
+  deploy_query=$(jq -n \
+    --arg serviceId "$RAILWAY_SERVICE_ID" \
+    --arg environmentId "$RAILWAY_ENVIRONMENT_ID" \
+    '{
+      query: "mutation TriggerDeploy($serviceId: String!, $environmentId: String!) { serviceInstanceDeploy(serviceId: $serviceId, environmentId: $environmentId) }",
+      variables: {
+        serviceId: $serviceId,
+        environmentId: $environmentId
+      }
+    }')
+
+  if ! deploy_response=$(railway_graphql "$deploy_query"); then
+    return 1
+  fi
+
+  deploy_success=$(printf '%s\n' "$deploy_response" | jq -r '.data.serviceInstanceDeploy // empty')
+  if [[ "$deploy_success" != "true" ]]; then
+    log_error "Railway no confirmó el inicio del deploy."
+    log_error "Respuesta: $deploy_response"
+    return 1
+  fi
+}
+
+# ── Helper: auto-rollback en prod hacia la imagen previa de Railway ──────────
+AUTO_ROLLBACK_RESULT=""
+attempt_prod_auto_rollback() {
+  AUTO_ROLLBACK_RESULT=""
+
+  if ! is_prod_environment; then
+    return 0
+  fi
+
+  if [[ "$AUTO_ROLLBACK_PROD" != "true" ]]; then
+    AUTO_ROLLBACK_RESULT="DISABLED"
+    log_info "Auto-rollback en prod desactivado (AUTO_ROLLBACK_PROD=$AUTO_ROLLBACK_PROD)."
+    return 0
+  fi
+
+  if [[ -z "${PREVIOUS_IMAGE:-}" ]]; then
+    AUTO_ROLLBACK_RESULT="SKIPPED (no previous image)"
+    log_warn "No hay imagen previa registrada en Railway para ejecutar auto-rollback en prod."
+    return 0
+  fi
+
+  if [[ "$PREVIOUS_IMAGE" == "$IMAGE" ]]; then
+    AUTO_ROLLBACK_RESULT="SKIPPED (same image)"
+    log_warn "La imagen previa en Railway ($PREVIOUS_IMAGE) coincide con la actual; se omite auto-rollback."
+    return 0
+  fi
+
+  log_step "Iniciando auto-rollback en prod hacia la imagen previa: $PREVIOUS_IMAGE"
+  if update_service_image "$PREVIOUS_IMAGE" && trigger_service_deploy; then
+    AUTO_ROLLBACK_RESULT="TRIGGERED -> $PREVIOUS_IMAGE"
+    log_warn "Auto-rollback disparado en Railway hacia $PREVIOUS_IMAGE. Recuerda revertir $CONFIG_FILE en Git."
+  else
+    AUTO_ROLLBACK_RESULT="FAILED ($PREVIOUS_IMAGE)"
+    log_error "El auto-rollback en Railway hacia $PREVIOUS_IMAGE también falló. Intervención manual requerida."
+  fi
+}
+
+# ── Snapshot del último deployment e imagen previa antes de desplegar ────────
 log_step "Consultando despliegue actual en Railway"
 if ! PREVIOUS_DEPLOY_RESPONSE=$(fetch_latest_deployment); then
   log_error "No se pudo consultar el estado previo de despliegues en Railway."
@@ -251,33 +380,25 @@ else
   log_info "No se encontraron despliegues previos en este servicio/ambiente."
 fi
 
+PREVIOUS_IMAGE=""
+if is_prod_environment && [[ "$AUTO_ROLLBACK_PROD" == "true" ]]; then
+  if PREVIOUS_IMAGE=$(fetch_current_service_image); then
+    if [[ -n "$PREVIOUS_IMAGE" ]]; then
+      log_info "Imagen previa en Railway (respaldo auto-rollback): $PREVIOUS_IMAGE"
+    else
+      log_info "No se encontró imagen previa configurada en Railway."
+    fi
+  else
+    PREVIOUS_IMAGE=""
+    log_warn "No se pudo consultar la imagen previa en Railway; auto-rollback no estará disponible en este intento."
+  fi
+fi
+
 # ── Paso 1: Actualizar la imagen del servicio ────────────────────────────────
 log_step "Actualizando imagen del servicio en Railway"
 
-UPDATE_QUERY=$(jq -n \
-  --arg serviceId "$RAILWAY_SERVICE_ID" \
-  --arg environmentId "$RAILWAY_ENVIRONMENT_ID" \
-  --arg image "$IMAGE" \
-  '{
-    query: "mutation ServiceInstanceUpdate($serviceId: String!, $environmentId: String!, $image: String!) { serviceInstanceUpdate(serviceId: $serviceId, environmentId: $environmentId, input: { source: { image: $image } }) }",
-    variables: {
-      serviceId: $serviceId,
-      environmentId: $environmentId,
-      image: $image
-    }
-  }')
-
-if ! UPDATE_RESPONSE=$(railway_graphql "$UPDATE_QUERY"); then
-  log_error "Falló la llamada para actualizar la imagen del servicio."
-  write_step_summary "N/A" "UPDATE_FAILED" "SKIPPED"
-  exit 1
-fi
-
-UPDATE_SUCCESS=$(printf '%s\n' "$UPDATE_RESPONSE" | jq -r '.data.serviceInstanceUpdate // empty')
-
-if [[ "$UPDATE_SUCCESS" != "true" ]]; then
-  log_error "No se pudo actualizar la imagen del servicio."
-  log_error "Respuesta: $UPDATE_RESPONSE"
+if ! update_service_image "$IMAGE"; then
+  log_error "Falló la actualización de imagen del servicio."
   write_step_summary "N/A" "UPDATE_FAILED" "SKIPPED"
   exit 1
 fi
@@ -287,28 +408,10 @@ log_ok "Imagen actualizada → $IMAGE"
 # ── Paso 2: Disparar el deploy ───────────────────────────────────────────────
 log_step "Disparando deploy en Railway"
 
-DEPLOY_QUERY=$(jq -n \
-  --arg serviceId "$RAILWAY_SERVICE_ID" \
-  --arg environmentId "$RAILWAY_ENVIRONMENT_ID" \
-  '{
-    query: "mutation TriggerDeploy($serviceId: String!, $environmentId: String!) { serviceInstanceDeploy(serviceId: $serviceId, environmentId: $environmentId) }",
-    variables: {
-      serviceId: $serviceId,
-      environmentId: $environmentId
-    }
-  }')
-
-if ! DEPLOY_RESPONSE=$(railway_graphql "$DEPLOY_QUERY"); then
+if ! trigger_service_deploy; then
   log_error "Error al disparar el deploy en Railway."
-  write_step_summary "N/A" "DEPLOY_TRIGGER_FAILED" "SKIPPED"
-  exit 1
-fi
-
-DEPLOY_SUCCESS=$(printf '%s\n' "$DEPLOY_RESPONSE" | jq -r '.data.serviceInstanceDeploy // empty')
-if [[ "$DEPLOY_SUCCESS" != "true" ]]; then
-  log_error "Railway no confirmó el inicio del deploy."
-  log_error "Respuesta: $DEPLOY_RESPONSE"
-  write_step_summary "N/A" "DEPLOY_TRIGGER_FAILED" "SKIPPED"
+  attempt_prod_auto_rollback
+  write_step_summary "N/A" "DEPLOY_TRIGGER_FAILED" "SKIPPED" "$AUTO_ROLLBACK_RESULT"
   exit 1
 fi
 
@@ -341,7 +444,8 @@ while true; do
           ;;
         FAILED|CRASHED|REMOVED|SKIPPED)
           log_error "El despliegue en Railway falló (ID: $DEPLOYMENT_ID, status: $DEPLOYMENT_STATUS)"
-          write_step_summary "$DEPLOYMENT_ID" "$DEPLOYMENT_STATUS" "SKIPPED"
+          attempt_prod_auto_rollback
+          write_step_summary "$DEPLOYMENT_ID" "$DEPLOYMENT_STATUS" "SKIPPED" "$AUTO_ROLLBACK_RESULT"
           exit 1
           ;;
         *)
@@ -355,7 +459,8 @@ while true; do
     CONSECUTIVE_POLL_ERRORS=$(( CONSECUTIVE_POLL_ERRORS + 1 ))
     if (( CONSECUTIVE_POLL_ERRORS >= RAILWAY_POLL_MAX_ERRORS )); then
       log_error "Polling abortado tras $CONSECUTIVE_POLL_ERRORS errores consecutivos de Railway API."
-      write_step_summary "${DEPLOYMENT_ID:-N/A}" "POLL_API_ERROR" "SKIPPED"
+      attempt_prod_auto_rollback
+      write_step_summary "${DEPLOYMENT_ID:-N/A}" "POLL_API_ERROR" "SKIPPED" "$AUTO_ROLLBACK_RESULT"
       exit 1
     fi
     log_warn "Error consultando estado en Railway ($CONSECUTIVE_POLL_ERRORS/$RAILWAY_POLL_MAX_ERRORS), reintentando..."
@@ -364,7 +469,8 @@ while true; do
   ELAPSED=$(( SECONDS - POLL_START ))
   if (( ELAPSED >= DEPLOY_TIMEOUT_SECONDS )); then
     log_error "Timeout tras ${ELAPSED}s esperando el despliegue en Railway (ID: ${DEPLOYMENT_ID:-N/A}, último estado: $DEPLOYMENT_STATUS)."
-    write_step_summary "${DEPLOYMENT_ID:-N/A}" "TIMEOUT ($DEPLOYMENT_STATUS)" "SKIPPED"
+    attempt_prod_auto_rollback
+    write_step_summary "${DEPLOYMENT_ID:-N/A}" "TIMEOUT ($DEPLOYMENT_STATUS)" "SKIPPED" "$AUTO_ROLLBACK_RESULT"
     exit 1
   fi
 
@@ -395,7 +501,8 @@ if [[ "$HEALTH_EXIT" -ne 0 ]]; then
   if [[ -n "$HEALTH_OUTPUT" ]]; then
     log_error "Detalle: $HEALTH_OUTPUT"
   fi
-  write_step_summary "$DEPLOYMENT_ID" "$DEPLOYMENT_STATUS" "FAILED"
+  attempt_prod_auto_rollback
+  write_step_summary "$DEPLOYMENT_ID" "$DEPLOYMENT_STATUS" "FAILED" "$AUTO_ROLLBACK_RESULT"
   exit 1
 fi
 
