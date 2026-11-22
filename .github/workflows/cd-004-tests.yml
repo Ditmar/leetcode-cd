@@ -1,0 +1,36 @@
+name: CD-004 tests
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  cd-004:
+    name: CD-004 deploy-railway shell tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Ensure jq is available
+        shell: bash
+        run: |
+          if ! command -v jq >/dev/null; then
+            sudo apt-get update -qq
+            sudo apt-get install -y --no-install-recommends jq
+          fi
+
+      - name: Check bash syntax
+        shell: bash
+        run: |
+          bash -n scripts/deploy-railway.sh
+          bash -n tests/test-deploy-railway.sh
+
+      - name: Run isolated CD-004 tests
+        shell: bash
+        run: bash tests/test-deploy-railway.sh
