@@ -41,6 +41,12 @@ jobs:
     name: Rollback ${{ inputs.app }} in ${{ inputs.environment }}
     runs-on: ubuntu-latest
     environment: ${{ inputs.environment }}   # Requiere aprobación en prod
+    env:
+      APP_NAME: ${{ inputs.app }}
+      TARGET_ENVIRONMENT: ${{ inputs.environment }}
+      ROLLBACK_STRATEGY: ${{ inputs.strategy }}
+      TARGET_TAG: ${{ inputs.target_tag }}
+      ROLLBACK_REASON: ${{ inputs.reason }}
 
     steps:
       - uses: actions/checkout@v4
@@ -51,18 +57,34 @@ jobs:
       - name: Install dependencies
         run: sudo apt-get install -y -qq jq
 
+      - name: Validate rollback inputs
+        run: |
+          if [[ ! "$APP_NAME" =~ ^[a-z0-9-]+$ ]]; then
+            echo "❌ Nombre de app inválido: $APP_NAME"
+            exit 1
+          fi
+          APP_DIR="apps/$APP_NAME"
+          if [[ ! -d "$APP_DIR" || -L "$APP_DIR" ]]; then
+            echo "❌ Directorio de app no válido: $APP_DIR"
+            exit 1
+          fi
+          if [[ "$ROLLBACK_STRATEGY" == "manual-tag" && ! "$TARGET_TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.-]+)?$ ]]; then
+            echo "❌ target_tag no cumple el formato semántico esperado"
+            exit 1
+          fi
+
       - name: Show current state
         id: current
         run: |
-          CONFIG_FILE="apps/${{ inputs.app }}/${{ inputs.environment }}.json"
+          CONFIG_FILE="apps/$APP_NAME/$TARGET_ENVIRONMENT.json"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  Estado actual en ${{ inputs.environment }}"
+          printf '  Estado actual en %s\n' "$TARGET_ENVIRONMENT"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           cat "$CONFIG_FILE"
 
           CURRENT_IMAGE=$(jq -r '.image' "$CONFIG_FILE")
-          echo "current_image=$CURRENT_IMAGE" >> $GITHUB_OUTPUT
-          echo "config_file=$CONFIG_FILE"     >> $GITHUB_OUTPUT
+          echo "current_image=$CURRENT_IMAGE" >> "$GITHUB_OUTPUT"
+          echo "config_file=$CONFIG_FILE"     >> "$GITHUB_OUTPUT"
 
       - name: Determine rollback target (git-history)
         id: resolve-git
@@ -71,7 +93,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          CONFIG_FILE="${{ steps.current.outputs.config_file }}"
+          CONFIG_FILE="$CURRENT_CONFIG_FILE"
 
           chmod +x scripts/find-previous-image.sh
 
@@ -98,148 +120,138 @@ jobs:
           echo "Imagen anterior encontrada: $PREV_IMAGE"
           echo "Commit seleccionado: $PREV_COMMIT"
           echo "Descripción del commit: $PREV_SUBJECT"
+        env:
+          CURRENT_CONFIG_FILE: ${{ steps.current.outputs.config_file }}
 
       - name: Determine rollback target (manual-tag)
         id: resolve-manual
         if: inputs.strategy == 'manual-tag'
         run: |
-          if [[ -z "${{ inputs.target_tag }}" ]]; then
-            echo "❌ target_tag es requerido cuando strategy=manual-tag"
-            exit 1
-          fi
-
           # Construir imagen completa con el tag proporcionado
-          CURRENT_IMAGE="${{ steps.current.outputs.current_image }}"
+          CURRENT_IMAGE="$CURRENT_IMAGE_FROM_CONFIG"
           IMAGE_BASE="${CURRENT_IMAGE%:*}"  # Todo menos el tag
-          TARGET_IMAGE="${IMAGE_BASE}:${{ inputs.target_tag }}"
+          TARGET_IMAGE="${IMAGE_BASE}:${TARGET_TAG}"
 
-          echo "target_image=$TARGET_IMAGE" >> $GITHUB_OUTPUT
+          echo "target_image=$TARGET_IMAGE" >> "$GITHUB_OUTPUT"
           echo "📦 Target de rollback: $TARGET_IMAGE"
+        env:
+          CURRENT_IMAGE_FROM_CONFIG: ${{ steps.current.outputs.current_image }}
 
       - name: Consolidate target image
         id: target
         run: |
-          if [[ "${{ inputs.strategy }}" == "git-history" ]]; then
-            echo "image=${{ steps.resolve-git.outputs.target_image }}" >> $GITHUB_OUTPUT
+          if [[ "$ROLLBACK_STRATEGY" == "git-history" ]]; then
+            echo "image=$GIT_HISTORY_TARGET_IMAGE" >> "$GITHUB_OUTPUT"
           else
-            echo "image=${{ steps.resolve-manual.outputs.target_image }}" >> $GITHUB_OUTPUT
+            echo "image=$MANUAL_TARGET_IMAGE" >> "$GITHUB_OUTPUT"
           fi
+        env:
+          GIT_HISTORY_TARGET_IMAGE: ${{ steps.resolve-git.outputs.target_image }}
+          MANUAL_TARGET_IMAGE: ${{ steps.resolve-manual.outputs.target_image }}
 
       - name: Validate rollback image exists
         run: |
           chmod +x scripts/validate-image.sh
-          TARGET_IMAGE="${{ steps.target.outputs.image }}"
-          RAILWAY_ENVIRONMENT="${{ inputs.environment }}" \
+          TARGET_IMAGE="$ROLLBACK_TARGET_IMAGE"
+          RAILWAY_ENVIRONMENT="$TARGET_ENVIRONMENT" \
             ./scripts/validate-image.sh "$TARGET_IMAGE"
+        env:
+          ROLLBACK_TARGET_IMAGE: ${{ steps.target.outputs.image }}
 
       - name: Show rollback plan
-        env:
-          APP: ${{ inputs.app }}
-          ENVIRONMENT: ${{ inputs.environment }}
-          STRATEGY: ${{ inputs.strategy }}
-          REASON: ${{ inputs.reason }}
-          ACTOR: ${{ github.actor }}
-          FROM_IMAGE: ${{ steps.current.outputs.current_image }}
-          TO_IMAGE: ${{ steps.target.outputs.image }}
-          TARGET_COMMIT: ${{ steps.resolve-git.outputs.target_commit }}
-          TARGET_SUBJECT: ${{ steps.resolve-git.outputs.target_subject }}
         run: |
           echo ""
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
           echo "  PLAN DE ROLLBACK"
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  App:        $APP"
-          echo "  Ambiente:   $ENVIRONMENT"
-          echo "  Actual:     $FROM_IMAGE"
-          echo "  Rollback a: $TO_IMAGE"
-          echo "  Estrategia: $STRATEGY"
-          echo "  Razón:      $REASON"
-          echo "  Ejecutado por: $ACTOR"
-          if [[ "$STRATEGY" == "git-history" ]]; then
-            echo "  Commit elegido: $TARGET_COMMIT"
-            echo "  Descripción:    $TARGET_SUBJECT"
+          printf '  App:        %s\n' "$APP_NAME"
+          printf '  Ambiente:   %s\n' "$TARGET_ENVIRONMENT"
+          printf '  Actual:     %s\n' "$CURRENT_IMAGE"
+          printf '  Rollback a: %s\n' "$ROLLBACK_TARGET_IMAGE"
+          printf '  Estrategia: %s\n' "$ROLLBACK_STRATEGY"
+          printf '  Razón:      %s\n' "$ROLLBACK_REASON"
+          printf '  Ejecutado por: %s\n' "$GITHUB_ACTOR"
+          if [[ "$ROLLBACK_STRATEGY" == "git-history" ]]; then
+            printf '  Commit elegido: %s\n' "$TARGET_COMMIT"
+            printf '  Descripción:    %s\n' "$TARGET_SUBJECT"
           else
             echo "  Commit elegido: no aplica (manual-tag)"
           fi
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        env:
+          CURRENT_IMAGE: ${{ steps.current.outputs.current_image }}
+          ROLLBACK_TARGET_IMAGE: ${{ steps.target.outputs.image }}
+          TARGET_COMMIT: ${{ steps.resolve-git.outputs.target_commit }}
+          TARGET_SUBJECT: ${{ steps.resolve-git.outputs.target_subject }}
 
       - name: Update environment JSON with rollback image
-        env:
-          CONFIG_FILE: ${{ steps.current.outputs.config_file }}
-          TARGET_IMAGE: ${{ steps.target.outputs.image }}
-          FROM_IMAGE: ${{ steps.current.outputs.current_image }}
-          ACTOR: ${{ github.actor }}
-          REASON: ${{ inputs.reason }}
         run: |
+          CONFIG_FILE="$CURRENT_CONFIG_FILE"
+          TARGET_IMAGE="$ROLLBACK_TARGET_IMAGE"
           NOW=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          NOTE="ROLLBACK desde $FROM_IMAGE → $TARGET_IMAGE. Razón: $REASON"
 
           TEMP=$(mktemp)
           jq --arg img "$TARGET_IMAGE" \
              --arg ts "$NOW" \
-             --arg by "$ACTOR" \
-             --arg note "$NOTE" \
-             '.image = $img | .deployedAt = $ts | .deployedBy = $by | .notes = $note' \
+             --arg by "$GITHUB_ACTOR" \
+             --arg current "$CURRENT_IMAGE" \
+             --arg reason "$ROLLBACK_REASON" \
+             '.image = $img | .deployedAt = $ts | .deployedBy = $by | .notes = ("ROLLBACK desde " + $current + " → " + $img + ". Razón: " + $reason)' \
              "$CONFIG_FILE" > "$TEMP"
           mv "$TEMP" "$CONFIG_FILE"
+        env:
+          CURRENT_CONFIG_FILE: ${{ steps.current.outputs.config_file }}
+          CURRENT_IMAGE: ${{ steps.current.outputs.current_image }}
+          ROLLBACK_TARGET_IMAGE: ${{ steps.target.outputs.image }}
 
       - name: Deploy rollback via deploy script
-        env:
-          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
-          CONFIG_FILE: ${{ steps.current.outputs.config_file }}
         run: |
           chmod +x scripts/deploy-railway.sh
-          ./scripts/deploy-railway.sh "$CONFIG_FILE"
+          ./scripts/deploy-railway.sh "$CURRENT_CONFIG_FILE"
+        env:
+          CURRENT_CONFIG_FILE: ${{ steps.current.outputs.config_file }}
+          RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
 
       - name: Commit rollback state to main
-        env:
-          CONFIG_FILE: ${{ steps.current.outputs.config_file }}
-          APP: ${{ inputs.app }}
-          ENVIRONMENT: ${{ inputs.environment }}
-          ACTOR: ${{ github.actor }}
-          REASON: ${{ inputs.reason }}
-          FROM_IMAGE: ${{ steps.current.outputs.current_image }}
-          TARGET_IMAGE: ${{ steps.target.outputs.image }}
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$CONFIG_FILE"
+          git add "$CURRENT_CONFIG_FILE"
           COMMIT_MSG=$(printf '%s\n\n%s\n%s\n%s' \
-            "rollback($APP/$ENVIRONMENT): → $TARGET_IMAGE" \
-            "Rollback ejecutado por: $ACTOR" \
-            "Razón: $REASON" \
-            "Imagen anterior: $FROM_IMAGE")
+            "rollback($APP_NAME/$TARGET_ENVIRONMENT): → $ROLLBACK_TARGET_IMAGE" \
+            "Rollback ejecutado por: $GITHUB_ACTOR" \
+            "Razón: $ROLLBACK_REASON" \
+            "Imagen anterior: $CURRENT_IMAGE")
           git commit -m "$COMMIT_MSG"
           git push
+        env:
+          CURRENT_CONFIG_FILE: ${{ steps.current.outputs.config_file }}
+          CURRENT_IMAGE: ${{ steps.current.outputs.current_image }}
+          ROLLBACK_TARGET_IMAGE: ${{ steps.target.outputs.image }}
 
       - name: Summary
-        env:
-          APP: ${{ inputs.app }}
-          ENVIRONMENT: ${{ inputs.environment }}
-          STRATEGY: ${{ inputs.strategy }}
-          REASON: ${{ inputs.reason }}
-          ACTOR: ${{ github.actor }}
-          FROM_IMAGE: ${{ steps.current.outputs.current_image }}
-          TO_IMAGE: ${{ steps.target.outputs.image }}
-          TARGET_COMMIT: ${{ steps.resolve-git.outputs.target_commit }}
-          TARGET_SUBJECT: ${{ steps.resolve-git.outputs.target_subject }}
         run: |
           {
             echo "## ✅ Rollback completado"
             echo ""
-            echo "**from \`$FROM_IMAGE\` to \`$TO_IMAGE\`**"
+            echo "**from \`$CURRENT_IMAGE\` to \`$ROLLBACK_TARGET_IMAGE\`**"
             echo ""
             echo "| Campo | Valor |"
             echo "|-------|-------|"
-            echo "| App | $APP |"
-            echo "| Ambiente | $ENVIRONMENT |"
-            echo "| Estrategia | $STRATEGY |"
-            echo "| Imagen anterior | $FROM_IMAGE |"
-            echo "| Imagen restaurada | $TO_IMAGE |"
-            if [[ "$STRATEGY" == "git-history" ]]; then
-              echo "| Commit elegido | $TARGET_COMMIT |"
-              echo "| Descripción | $TARGET_SUBJECT |"
+            printf '| App | %s |\n' "$APP_NAME"
+            printf '| Ambiente | %s |\n' "$TARGET_ENVIRONMENT"
+            printf '| Estrategia | %s |\n' "$ROLLBACK_STRATEGY"
+            printf '| Imagen anterior | %s |\n' "$CURRENT_IMAGE"
+            printf '| Imagen restaurada | %s |\n' "$ROLLBACK_TARGET_IMAGE"
+            if [[ "$ROLLBACK_STRATEGY" == "git-history" ]]; then
+              printf '| Commit elegido | %s |\n' "$TARGET_COMMIT"
+              printf '| Descripción | %s |\n' "$TARGET_SUBJECT"
             fi
-            echo "| Razón | $REASON |"
-            echo "| Ejecutado por | $ACTOR |"
+            printf '| Razón | %s |\n' "$ROLLBACK_REASON"
+            printf '| Ejecutado por | %s |\n' "$GITHUB_ACTOR"
           } >> "$GITHUB_STEP_SUMMARY"
+        env:
+          CURRENT_IMAGE: ${{ steps.current.outputs.current_image }}
+          ROLLBACK_TARGET_IMAGE: ${{ steps.target.outputs.image }}
+          TARGET_COMMIT: ${{ steps.resolve-git.outputs.target_commit }}
+          TARGET_SUBJECT: ${{ steps.resolve-git.outputs.target_subject }}

@@ -1,15 +1,15 @@
 {
   "app": "leetcode-spa",
   "environment": "ppd",
-  "image": "ditmar/leetcode-spa:0.11.0",
+  "image": "ditmar/leetcode-spa:0.12.0",
   "railwayProject": "leetcode",
   "railwayProjectId": "824cf489-b077-4bb9-ab4c-af7e72674f5f",
   "railwayEnvironment": "ppd",
   "railwayEnvironmentId": "4b6ca1af-8042-4d06-b469-ea34f3a8cc56",
   "railwayService": "leetcode-spa",
   "railwayServiceId": "19f2ad7f-a70e-4aec-b688-8f88b0272c4c",
-  "deployedAt": "2026-06-17T13:40:39Z",
+  "deployedAt": "2026-11-11T13:56:20Z",
   "deployedBy": "Ditmar",
-  "commitSha": "a560f8d",
+  "commitSha": "8f426a5",
   "notes": "Pre-production smoke test — awaiting final approval for prod promotion"
 }
