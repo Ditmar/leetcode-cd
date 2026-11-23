@@ -257,4 +257,15 @@ set -e
   fail "Esperaba código 2 cuando lo único anterior es la imagen de la que se hizo rollback (código: $STATUS)"
 pass "No redespliega la única imagen anterior si fue la de la que se hizo rollback"
 
+# Caso 12: el script reconoce los rollbacks por la línea "Imagen anterior: X"
+# del mensaje de commit. Si rollback.yml cambia (o traduce) ese texto, la
+# detección dejaría de funcionar sin avisar, así que verificamos que el
+# workflow y el script siguen usando el mismo texto.
+WORKFLOW="$(cd "$(dirname "$SCRIPT")/.." && pwd)/.github/workflows/rollback.yml"
+grep -Fq 'Imagen anterior: ' "$WORKFLOW" ||
+  fail "rollback.yml ya no escribe 'Imagen anterior: ' en el commit de rollback"
+grep -Fq 'Imagen anterior: ' "$SCRIPT" ||
+  fail "find-previous-image.sh ya no busca 'Imagen anterior: '"
+pass "rollback.yml y el script usan el mismo texto 'Imagen anterior: '"
+
 printf '\nTodas las pruebas iniciales pasaron.\n'
