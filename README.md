@@ -322,8 +322,10 @@ Options considered: (a) a ruleset that lets only the bot push metadata commits, 
 Repository configuration (done by a repository admin):
 
 - Ruleset on `master`: require a pull request with at least one approval, require status checks, block force pushes and deletions.
-- Bypass list: only the identity the workflows push with (GitHub Actions / `github-actions[bot]`; if the ruleset does not offer it, a dedicated GitHub App whose token the workflows use). No user or team bypass.
-- Environments `ppd` and `prod`: required reviewers and deployment branches limited to `master`. This closes the risk that someone edits a workflow on another branch and runs it to use the bot bypass: jobs with `environment: ppd/prod` cannot run from any branch except `master`, and changes to `master` (including `.github/workflows/`) need a reviewed PR.
+- Bypass list: only a dedicated GitHub App created for deploy state commits. No user or team bypass, and **not** GitHub Actions / the `GITHUB_TOKEN`: any workflow on any branch can get a `GITHUB_TOKEN` with `contents: write`, so a bypass for it would let a new workflow without `environment:` run `git push origin HEAD:master` and skip the PR.
+- The App's ID and private key are stored only as **environment secrets** of `ppd` and `prod`, never as repository secrets.
+- Environments `ppd` and `prod`: required reviewers and deployment branches limited to `master`. Only jobs that declare one of these environments and run from `master` can read the App key and get a token with bypass. A workflow on another branch, or a job without `environment:`, cannot.
+- The push steps in `deploy.yml` and `rollback.yml` must use a token generated from that App instead of the `GITHUB_TOKEN`; with the `GITHUB_TOKEN` they would be blocked once the ruleset is on. Pushes made with an App token do trigger workflows, so the rollback commit then also needs `[skip ci]`, like the deploy metadata commit.
 
 ---
 
