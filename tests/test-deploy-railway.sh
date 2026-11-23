@@ -731,10 +731,10 @@ fi
 assert_file_unchanged "$c13/cfg.json" "$c13/cfg.orig" "Invalid token leaves JSON metadata untouched"
 
 # =============================================================================
-# 14. Estado REMOVED falla limpiamente y NO modifica JSON
+# 14. Estado REMOVED en prod falla limpiamente, NO modifica JSON y NO hace auto-rollback
 # =============================================================================
 c14=$(run_case "removed_status")
-write_sample_config "$c14/cfg.json" "https://api.example.com/health" "true"
+write_sample_config "$c14/cfg.json" "https://api.example.com/health" "true" "prod"
 cp "$c14/cfg.json" "$c14/cfg.orig"
 cat > "$c14/deployments.jsonl" <<'EOF'
 {"data":{"deployments":{"edges":[{"node":{"id":"dep-old-001","status":"SUCCESS","createdAt":"2026-11-01T00:00:00Z"}}]}}}
@@ -743,6 +743,8 @@ EOF
 : > "$c14/args.log"
 : > "$c14/auth.log"
 : > "$c14/health.log"
+: > "$c14/updates.log"
+: > "$c14/deploys.log"
 : > "$c14/summary.md"
 
 out=$(
@@ -750,8 +752,11 @@ out=$(
   MOCK_ARGS_LOG="$c14/args.log" \
   MOCK_AUTH_LOG="$c14/auth.log" \
   MOCK_HEALTH_LOG="$c14/health.log" \
+  MOCK_UPDATES_LOG="$c14/updates.log" \
+  MOCK_DEPLOYS_LOG="$c14/deploys.log" \
   MOCK_POLL_COUNTER="$c14/poll.count" \
   MOCK_DEPLOYMENTS_FILE="$c14/deployments.jsonl" \
+  MOCK_PREVIOUS_IMAGE="ditmar/api-leetcode:0.1.0" \
   RAILWAY_API_TOKEN="secret-railway-token-123" \
   SKIP_IMAGE_VALIDATION="true" \
   DEPLOY_TIMEOUT_SECONDS="30" \
@@ -765,8 +770,15 @@ if [[ "$rc" -ne 0 ]]; then
 else
   fail "REMOVED deployment should fail"
 fi
+if [[ "$(wc -l < "$c14/updates.log" | tr -d ' ')" == "1" && "$(wc -l < "$c14/deploys.log" | tr -d ' ')" == "1" ]]; then
+  pass "REMOVED deployment in prod does NOT trigger auto-rollback"
+else
+  fail "REMOVED deployment in prod should not trigger auto-rollback"
+fi
 assert_file_unchanged "$c14/cfg.json" "$c14/cfg.orig" "REMOVED deployment leaves JSON metadata untouched"
-assert_contains "$(cat "$c14/summary.md")" "REMOVED" "REMOVED summary shows REMOVED status"
+summary_c14=$(cat "$c14/summary.md")
+assert_contains "$summary_c14" "REMOVED" "REMOVED summary shows REMOVED status"
+assert_contains "$summary_c14" "SKIPPED (REMOVED)" "REMOVED summary records auto-rollback skipped"
 
 # =============================================================================
 # 15. Auto-rollback en prod cuando el despliegue termina en CRASHED
@@ -1004,6 +1016,54 @@ else
   fail "AUTO_ROLLBACK_PROD=false should disable auto-rollback in prod"
 fi
 assert_contains "$(cat "$c19/summary.md")" "DISABLED" "Disabled auto-rollback is recorded in summary"
+
+# =============================================================================
+# 20. Estado SKIPPED en prod falla limpiamente, NO modifica JSON y NO hace auto-rollback
+# =============================================================================
+c20=$(run_case "skipped_status_no_rollback")
+write_sample_config "$c20/cfg.json" "https://api.example.com/health" "true" "prod"
+cp "$c20/cfg.json" "$c20/cfg.orig"
+cat > "$c20/deployments.jsonl" <<'EOF'
+{"data":{"deployments":{"edges":[{"node":{"id":"dep-old-001","status":"SUCCESS","createdAt":"2026-11-01T00:00:00Z"}}]}}}
+{"data":{"deployments":{"edges":[{"node":{"id":"dep-skipped-020","status":"SKIPPED","createdAt":"2026-11-22T10:00:00Z"}}]}}}
+EOF
+: > "$c20/args.log"
+: > "$c20/auth.log"
+: > "$c20/health.log"
+: > "$c20/updates.log"
+: > "$c20/deploys.log"
+: > "$c20/summary.md"
+
+out=$(
+  PATH="$c20/bin:$PATH" \
+  MOCK_ARGS_LOG="$c20/args.log" \
+  MOCK_AUTH_LOG="$c20/auth.log" \
+  MOCK_HEALTH_LOG="$c20/health.log" \
+  MOCK_UPDATES_LOG="$c20/updates.log" \
+  MOCK_DEPLOYS_LOG="$c20/deploys.log" \
+  MOCK_POLL_COUNTER="$c20/poll.count" \
+  MOCK_DEPLOYMENTS_FILE="$c20/deployments.jsonl" \
+  MOCK_PREVIOUS_IMAGE="ditmar/api-leetcode:0.1.0" \
+  RAILWAY_API_TOKEN="secret-railway-token-123" \
+  SKIP_IMAGE_VALIDATION="true" \
+  DEPLOY_TIMEOUT_SECONDS="30" \
+  DEPLOY_POLL_INTERVAL="0" \
+  GITHUB_STEP_SUMMARY="$c20/summary.md" \
+  bash "$SCRIPT" "$c20/cfg.json" 2>&1
+)
+rc=$?
+if [[ "$rc" -ne 0 ]]; then
+  pass "SKIPPED deployment fails cleanly"
+else
+  fail "SKIPPED deployment should fail"
+fi
+if [[ "$(wc -l < "$c20/updates.log" | tr -d ' ')" == "1" && "$(wc -l < "$c20/deploys.log" | tr -d ' ')" == "1" ]]; then
+  pass "SKIPPED deployment in prod does NOT trigger auto-rollback"
+else
+  fail "SKIPPED deployment in prod should not trigger auto-rollback"
+fi
+assert_file_unchanged "$c20/cfg.json" "$c20/cfg.orig" "SKIPPED deployment leaves JSON metadata untouched"
+assert_contains "$(cat "$c20/summary.md")" "SKIPPED (SKIPPED)" "SKIPPED summary records auto-rollback skipped"
 
 # =============================================================================
 # Resumen

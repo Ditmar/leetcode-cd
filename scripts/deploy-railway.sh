@@ -100,7 +100,7 @@ HEALTH_URL_NO_SCHEME="${HEALTH_URL#*://}"
 HEALTH_URL_AUTHORITY="${HEALTH_URL_NO_SCHEME%%[/?#]*}"
 HEALTH_URL_HOST="${HEALTH_URL_AUTHORITY##*@}"
 HEALTH_URL_HOST="${HEALTH_URL_HOST%%:*}"
-HEALTH_URL_HOST_LOWER="${HEALTH_URL_HOST,,}"
+HEALTH_URL_HOST_LOWER="$(printf '%s' "$HEALTH_URL_HOST" | tr '[:upper:]' '[:lower:]')"
 
 if [[ -z "$HEALTH_URL_HOST_LOWER" ]]; then
   log_error "Campo 'healthUrl' sin host válido en $CONFIG_FILE: $HEALTH_URL"
@@ -442,9 +442,19 @@ while true; do
           log_ok "Despliegue en Railway completado (ID: $DEPLOYMENT_ID, status: SUCCESS)"
           break
           ;;
-        FAILED|CRASHED|REMOVED|SKIPPED)
+        FAILED|CRASHED)
           log_error "El despliegue en Railway falló (ID: $DEPLOYMENT_ID, status: $DEPLOYMENT_STATUS)"
           attempt_prod_auto_rollback
+          write_step_summary "$DEPLOYMENT_ID" "$DEPLOYMENT_STATUS" "SKIPPED" "$AUTO_ROLLBACK_RESULT"
+          exit 1
+          ;;
+        REMOVED|SKIPPED)
+          log_error "El despliegue en Railway fue reemplazado/cancelado (ID: $DEPLOYMENT_ID, status: $DEPLOYMENT_STATUS); se omite auto-rollback."
+          if is_prod_environment; then
+            AUTO_ROLLBACK_RESULT="SKIPPED ($DEPLOYMENT_STATUS)"
+          else
+            AUTO_ROLLBACK_RESULT=""
+          fi
           write_step_summary "$DEPLOYMENT_ID" "$DEPLOYMENT_STATUS" "SKIPPED" "$AUTO_ROLLBACK_RESULT"
           exit 1
           ;;

@@ -8,7 +8,7 @@
   "railwayEnvironmentId": "4b6ca1af-8042-4d06-b469-ea34f3a8cc56",
   "railwayService": "leetcode-spa",
   "railwayServiceId": "19f2ad7f-a70e-4aec-b688-8f88b0272c4c",
-  "healthUrl": "https://leetcode-spa-ppd.railway.invalid/health",
+  "healthUrl": "https://leetcode-spa-ppd.up.railway.app/health",
   "deployedAt": "2026-11-11T13:56:20Z",
   "deployedBy": "Ditmar",
   "commitSha": "8f426a5",
