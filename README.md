@@ -334,3 +334,7 @@ El tag `latest` es una referencia mutable — apunta a "la última imagen" y cam
 | prod | `MAYOR.MENOR.PATCH` | `1.2.0` |
 
 El script `validate-image.sh` bloquea activamente el uso de `latest` en `ppd` y `prod`.
+
+## Architecture
+
+See the [architecture overview](https://github.com/Ditmar/leetcode-spa/blob/next/docs/architecture.md) for how the SPA, the API and this deployment repository fit together.
