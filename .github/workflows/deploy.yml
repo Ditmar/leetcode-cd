@@ -256,8 +256,8 @@ jobs:
       - name: Notify deployment success
         if: success()
         run: |
-          IMAGE=$(jq -r '.image' "CONFIG_FILE")
-          printf '✅ Deployment of %s to %s requested (verify the final status in Railway)\n' "$DEPLOYMENT_ENVIRONMENT"
+          IMAGE=$(jq -r '.image' "$CONFIG_FILE")
+          printf '✅ Deployed %s to %s successfully\n' "$IMAGE" "$DEPLOY_ENVIRONMENT"
           # Aquí podrías agregar notificación a Slack/Teams:
           # curl -X POST "$SLACK_WEBHOOK" -d '{"text": "..."}'
         env:
