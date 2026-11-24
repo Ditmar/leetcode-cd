@@ -119,7 +119,8 @@ It runs on every push to `master` that changes `apps/**/ppd.json` or `apps/**/pr
 | Secret                                   | Used by                                     | Description                                                                                                     |
 | ---------------------------------------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | `RAILWAY_API_TOKEN`                      | `deploy.yml`, `rollback.yml`                | Railway API token (Railway → Account Settings → Tokens). Required.                                              |
-| `GITHUB_TOKEN`                           | `deploy.yml`, `promote.yml`, `rollback.yml` | Provided automatically by GitHub: checkout, push of metadata and rollback commits, branch and PR creation.      |
+| `GITHUB_TOKEN` | `deploy.yml`, `promote.yml`, `rollback.yml` | Provided automatically by GitHub: checkout, and branch and PR creation in `promote.yml`. Pushes to `master` use the GitHub App token instead. |
+| `CD_APP_ID` / `CD_APP_PRIVATE_KEY` | `deploy.yml`, `rollback.yml` | Environment secrets of `ppd` and `prod` for the GitHub App that pushes deploy metadata and rollback commits to `master` (see [Decision: how deploy state is kept](#decision-how-deploy-state-is-kept-cd-011)). Required. |
 | `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` | None today                                  | Read by `validate-image.sh` for private images, but **the workflows do not pass them**. Keep the images public. |
 
 ### 2. GitHub Environments (for approvals)
@@ -286,7 +287,7 @@ The workflow validates the target image, updates the JSON, requests the deploy t
 - `manual-tag` keeps the current image name and swaps only the tag.
 - `git-history` takes the second most recent commit that touched the file. Deploy metadata commits also touch it, so it may pick the image that is already running. Read the "Rollback plan" step before relying on it.
 
-The rollback commit is pushed with `scripts/git-push-with-retry.sh`. Because the push uses the `GITHUB_TOKEN`, it does not trigger `deploy.yml` again. If the push fails, Railway already runs the rollback image but `master` still shows the old one: fix the JSON with a PR (manual option below).
+The rollback commit is pushed with `scripts/git-push-with-retry.sh`. The push uses the GitHub App token (see the CD-011 decision below) and the commit message ends with `[skip ci]`, so it does not trigger `deploy.yml` again. If the push fails, Railway already runs the rollback image but `master` still shows the old one: fix the JSON with a PR (manual option below).
 
 ### Manual option: through git and a PR
 
@@ -323,9 +324,10 @@ Repository configuration (done by a repository admin):
 
 - Ruleset on `master`: require a pull request with at least one approval, require status checks, block force pushes and deletions.
 - Bypass list: only a dedicated GitHub App created for deploy state commits. No user or team bypass, and **not** GitHub Actions / the `GITHUB_TOKEN`: any workflow on any branch can get a `GITHUB_TOKEN` with `contents: write`, so a bypass for it would let a new workflow without `environment:` run `git push origin HEAD:master` and skip the PR.
-- The App's ID and private key are stored only as **environment secrets** of `ppd` and `prod`, never as repository secrets.
+- The App's ID and private key are stored only as **environment secrets** of `ppd` and `prod`, never as repository secrets, with the names `CD_APP_ID` and `CD_APP_PRIVATE_KEY`. The App needs `Contents: Read and write` and must be installed on this repository.
 - Environments `ppd` and `prod`: required reviewers and deployment branches limited to `master`. Only jobs that declare one of these environments and run from `master` can read the App key and get a token with bypass. A workflow on another branch, or a job without `environment:`, cannot.
-- The push steps in `deploy.yml` and `rollback.yml` must use a token generated from that App instead of the `GITHUB_TOKEN`; with the `GITHUB_TOKEN` they would be blocked once the ruleset is on. Pushes made with an App token do trigger workflows, so the rollback commit then also needs `[skip ci]`, like the deploy metadata commit.
+- The `deploy` job in `deploy.yml` and the `rollback` job in `rollback.yml` generate a token from that App with `actions/create-github-app-token` and use it in `actions/checkout`, so their pushes to `master` use the App token instead of the `GITHUB_TOKEN`. Pushes made with an App token do trigger workflows, so both commits end with `[skip ci]` (deploy metadata and rollback state).
+- Until the admin creates the App and the two secrets, the token step fails and these two jobs stop before deploying.
 
 ---
 
