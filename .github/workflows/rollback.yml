@@ -53,11 +53,18 @@ jobs:
       cancel-in-progress: false
 
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CD_APP_ID }}
+          private-key: ${{ secrets.CD_APP_PRIVATE_KEY }}
+
       - uses: actions/checkout@v4
         with:
           ref: master
           fetch-depth: 0
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ steps.app-token.outputs.token }}
 
       - name: Install dependencies
         run: sudo apt-get install -y -qq jq
@@ -201,7 +208,7 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "$CURRENT_CONFIG_FILE"
           COMMIT_MSG=$(printf '%s\n\n%s\n%s\n%s' \
-            "rollback($APP_NAME/$TARGET_ENVIRONMENT): → $ROLLBACK_TARGET_IMAGE" \
+            "rollback($APP_NAME/$TARGET_ENVIRONMENT): → $ROLLBACK_TARGET_IMAGE [skip ci]" \
             "Rollback ejecutado por: $GITHUB_ACTOR" \
             "Razón: $ROLLBACK_REASON" \
             "Imagen anterior: $CURRENT_IMAGE")
