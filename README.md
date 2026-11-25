@@ -327,6 +327,7 @@ Repository configuration (done by a repository admin):
 - The App's ID and private key are stored only as **environment secrets** of `ppd` and `prod`, never as repository secrets, with the names `CD_APP_ID` and `CD_APP_PRIVATE_KEY`. The App needs `Contents: Read and write` and must be installed on this repository.
 - Environments `ppd` and `prod`: required reviewers and deployment branches limited to `master`. Only jobs that declare one of these environments and run from `master` can read the App key and get a token with bypass. A workflow on another branch, or a job without `environment:`, cannot.
 - The `deploy` job in `deploy.yml` and the `rollback` job in `rollback.yml` generate a token from that App with `actions/create-github-app-token` and use it in `actions/checkout`, so their pushes to `master` use the App token instead of the `GITHUB_TOKEN`. Pushes made with an App token do trigger workflows, so both commits end with `[skip ci]` (deploy metadata and rollback state).
+- In both workflows the `GITHUB_TOKEN` only has `contents: read`, and the App token is requested with `permission-contents: write` only.
 - Until the admin creates the App and the two secrets, the token step fails and these two jobs stop before deploying.
 
 ---
