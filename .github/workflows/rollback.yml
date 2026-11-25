@@ -33,8 +33,7 @@ on:
         type: string
 
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   rollback:
@@ -59,6 +58,7 @@ jobs:
         with:
           app-id: ${{ secrets.CD_APP_ID }}
           private-key: ${{ secrets.CD_APP_PRIVATE_KEY }}
+          permission-contents: write
 
       - uses: actions/checkout@v4
         with:

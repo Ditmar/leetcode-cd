@@ -24,7 +24,7 @@ on:
 
 # ── Permisos mínimos necesarios ───────────────────────────────────────────────
 permissions:
-  contents: write # para commitear la actualización de deployedAt en el JSON
+  contents: read # el push del JSON usa el token de la GitHub App
   pull-requests: read
 
 jobs:
@@ -148,6 +148,7 @@ jobs:
         with:
           app-id: ${{ secrets.CD_APP_ID }}
           private-key: ${{ secrets.CD_APP_PRIVATE_KEY }}
+          permission-contents: write
 
       - uses: actions/checkout@v4
         with:
