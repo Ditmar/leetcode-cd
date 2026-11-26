@@ -24,7 +24,7 @@ on:
 
 # ── Permisos mínimos necesarios ───────────────────────────────────────────────
 permissions:
-  contents: write # para commitear la actualización de deployedAt en el JSON
+  contents: read # el push del JSON usa el token de la GitHub App
   pull-requests: read
 
 jobs:
@@ -142,9 +142,18 @@ jobs:
       RAILWAY_API_TOKEN: ${{ secrets.RAILWAY_API_TOKEN }}
 
     steps:
+      - name: Generate GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.CD_APP_ID }}
+          private-key: ${{ secrets.CD_APP_PRIVATE_KEY }}
+          permission-contents: write
+
       - uses: actions/checkout@v4
         with:
           ref: master
+          token: ${{ steps.app-token.outputs.token }}
           # fetch-depth: 0 (historial completo) es necesario para que el retry
           # con `git rebase origin/master` del step "Update metadata in config
           # file" funcione — con el default (depth=1) no hay historial suficiente.
@@ -224,30 +233,8 @@ jobs:
           COMMIT_SUBJECT=$(printf 'chore(cd): update deploy metadata for %s/%s [skip ci]' "$APP_NAME" "$DEPLOY_ENVIRONMENT")
           git commit -m "$COMMIT_SUBJECT"
 
-          # Retry con rebase: el `concurrency` group ya serializa los jobs de este
-          # workflow, pero esto protege además contra pushes de otros workflows
-          # (promote.yml, rollback.yml) que puedan tocar master al mismo tiempo.
-          MAX_ATTEMPTS=5
-          for attempt in $(seq 1 "$MAX_ATTEMPTS"); do
-            if git push; then
-              echo "✅ Push exitoso (intento $attempt)"
-              exit 0
-            fi
-
-            if [[ "$attempt" -eq "$MAX_ATTEMPTS" ]]; then
-              echo "❌ Push falló después de $MAX_ATTEMPTS intentos"
-              exit 1
-            fi
-
-            echo "⚠️  Push rechazado (rama remota avanzó), reintentando con rebase..."
-            sleep $(( RANDOM % 5 + 1 ))  # jitter para evitar reintentos sincronizados
-            git fetch origin master
-            git rebase origin/master || {
-              git rebase --abort
-              echo "❌ Rebase falló (posible conflicto real en el JSON), abortando"
-              exit 1
-            }
-          done
+          chmod +x scripts/git-push-with-retry.sh
+          ./scripts/git-push-with-retry.sh master
         env:
           CONFIG_FILE: ${{ matrix.config_file }}
           APP_NAME: ${{ matrix.app }}
