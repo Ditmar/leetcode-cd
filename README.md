@@ -184,7 +184,7 @@ Each `apps/<app>/<env>.json` describes the desired state of one deployment:
 
 ```bash
 # 1. Make sure the image exists on Docker Hub
-bash scripts/validate-image.sh ditmar/api-leetcode:0.2.0
+TARGET_ENV=ppd bash scripts/validate-image.sh ditmar/api-leetcode:0.2.0
 
 # 2. Create a branch and edit the environment file
 git checkout -b deploy/api-leetcode-ppd-0.2.0
@@ -361,6 +361,33 @@ done
 | No audit trail                                             | You cannot tell what changed between deploys |
 
 **Tag convention in this repo:** semantic versions, `MAJOR.MINOR.PATCH` (for example `1.2.3`). `validate-image.sh`, `promote.sh` and `promote.yml` block `latest` in `ppd` and `prod`.
+
+### CD-003 image validation
+
+`validate-image.sh` requires `X.Y.Z` in `prod` and accepts `X.Y.Z` or
+`X.Y.Z-rc.N` in `ppd`. It rejects `latest`, missing tags and invalid formats
+before querying the image registry.
+
+The logical environments are `dev`, `qa`, `ppd` and `prod`. Railway names may
+use those same values or the aliases `development` → `dev` and `production` →
+`prod`, without changing `RAILWAY_ENVIRONMENT`. When both contexts are provided,
+they must agree. Unknown names or two absent contexts cause an error; an empty
+context is treated as absent. Deployment requires both `environment` and
+`railwayEnvironment` in the JSON and checks their consistency even with
+`SKIP_IMAGE_VALIDATION=true`.
+
+To validate an image directly, provide at least one known context:
+
+```bash
+TARGET_ENV=prod bash scripts/validate-image.sh ditmar/api-leetcode:1.2.3
+RAILWAY_ENVIRONMENT=production bash scripts/validate-image.sh ditmar/api-leetcode:1.2.3
+```
+
+The standalone validator preserves development tags for explicit `dev` and `qa`
+contexts; this repository's deployment environments remain `ppd` and `prod`.
+Run the isolated suite with `bash tests/cd-003.sh` (Bash, jq and POSIX utilities).
+The `CD-003 tests` workflow also runs it on Pull Requests, without deployment
+secrets or real calls to Railway or Docker Hub.
 
 ---
 
