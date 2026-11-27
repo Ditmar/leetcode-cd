@@ -51,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 20  # Necesitamos historial para git-history strategy
+          fetch-depth: 100  # Necesitamos historial para git-history strategy
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Install dependencies
@@ -89,23 +89,37 @@ jobs:
       - name: Determine rollback target (git-history)
         id: resolve-git
         if: inputs.strategy == 'git-history'
+        shell: bash
         run: |
+          set -euo pipefail
+
           CONFIG_FILE="$CURRENT_CONFIG_FILE"
 
-          # Obtener el penúltimo estado del archivo en git
-          PREV_IMAGE=$(git log --oneline -10 -- "$CONFIG_FILE" | \
-            awk 'NR==2{print $1}' | \
-            xargs -I{} git show {}:"$CONFIG_FILE" 2>/dev/null | \
-            jq -r '.image // empty')
+          chmod +x scripts/find-previous-image.sh
 
-          if [[ -z "$PREV_IMAGE" ]]; then
-            echo "❌ No se encontró versión anterior en el historial de git."
-            echo "Usa strategy=manual-tag y especifica el tag directamente."
+          if ! RESULT=$(./scripts/find-previous-image.sh "$CONFIG_FILE" 50); then
+            echo "::error::No se encontró una imagen anterior válida y distinta. No se continuará con el rollback."
             exit 1
           fi
 
-          echo "target_image=$PREV_IMAGE" >> "$GITHUB_OUTPUT"
-          echo "📦 Versión anterior encontrada: $PREV_IMAGE"
+          PREV_IMAGE=$(printf '%s\n' "$RESULT" | sed -n 's/^image=//p' | head -n 1)
+          PREV_COMMIT=$(printf '%s\n' "$RESULT" | sed -n 's/^commit=//p' | head -n 1)
+          PREV_SUBJECT=$(printf '%s\n' "$RESULT" | sed -n 's/^subject=//p' | head -n 1)
+
+          if [[ -z "$PREV_IMAGE" || -z "$PREV_COMMIT" ]]; then
+            echo "::error::El script no devolvió la imagen anterior y su commit."
+            exit 1
+          fi
+
+          {
+            echo "target_image=$PREV_IMAGE"
+            echo "target_commit=$PREV_COMMIT"
+            echo "target_subject=$PREV_SUBJECT"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Imagen anterior encontrada: $PREV_IMAGE"
+          echo "Commit seleccionado: $PREV_COMMIT"
+          echo "Descripción del commit: $PREV_SUBJECT"
         env:
           CURRENT_CONFIG_FILE: ${{ steps.current.outputs.config_file }}
 
@@ -157,10 +171,18 @@ jobs:
           printf '  Estrategia: %s\n' "$ROLLBACK_STRATEGY"
           printf '  Razón:      %s\n' "$ROLLBACK_REASON"
           printf '  Ejecutado por: %s\n' "$GITHUB_ACTOR"
+          if [[ "$ROLLBACK_STRATEGY" == "git-history" ]]; then
+            printf '  Commit elegido: %s\n' "$TARGET_COMMIT"
+            printf '  Descripción:    %s\n' "$TARGET_SUBJECT"
+          else
+            echo "  Commit elegido: no aplica (manual-tag)"
+          fi
           echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         env:
           CURRENT_IMAGE: ${{ steps.current.outputs.current_image }}
           ROLLBACK_TARGET_IMAGE: ${{ steps.target.outputs.image }}
+          TARGET_COMMIT: ${{ steps.resolve-git.outputs.target_commit }}
+          TARGET_SUBJECT: ${{ steps.resolve-git.outputs.target_subject }}
 
       - name: Update environment JSON with rollback image
         run: |
@@ -209,11 +231,27 @@ jobs:
 
       - name: Summary
         run: |
-          printf '## ✅ Rollback completado\n\n| Campo | Valor |\n|-------|-------|\n' >> "$GITHUB_STEP_SUMMARY"
-          printf '| App | %s |\n| Ambiente | %s |\n| Imagen anterior | %s |\n| Imagen restaurada | %s |\n| Razón | %s |\n| Ejecutado por | %s |\n' \
-            "$APP_NAME" "$TARGET_ENVIRONMENT" "$CURRENT_IMAGE" \
-            "$ROLLBACK_TARGET_IMAGE" "$ROLLBACK_REASON" "$GITHUB_ACTOR" \
-            >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## ✅ Rollback completado"
+            echo ""
+            echo "**from \`$CURRENT_IMAGE\` to \`$ROLLBACK_TARGET_IMAGE\`**"
+            echo ""
+            echo "| Campo | Valor |"
+            echo "|-------|-------|"
+            printf '| App | %s |\n' "$APP_NAME"
+            printf '| Ambiente | %s |\n' "$TARGET_ENVIRONMENT"
+            printf '| Estrategia | %s |\n' "$ROLLBACK_STRATEGY"
+            printf '| Imagen anterior | %s |\n' "$CURRENT_IMAGE"
+            printf '| Imagen restaurada | %s |\n' "$ROLLBACK_TARGET_IMAGE"
+            if [[ "$ROLLBACK_STRATEGY" == "git-history" ]]; then
+              printf '| Commit elegido | %s |\n' "$TARGET_COMMIT"
+              printf '| Descripción | %s |\n' "$TARGET_SUBJECT"
+            fi
+            printf '| Razón | %s |\n' "$ROLLBACK_REASON"
+            printf '| Ejecutado por | %s |\n' "$GITHUB_ACTOR"
+          } >> "$GITHUB_STEP_SUMMARY"
         env:
           CURRENT_IMAGE: ${{ steps.current.outputs.current_image }}
           ROLLBACK_TARGET_IMAGE: ${{ steps.target.outputs.image }}
+          TARGET_COMMIT: ${{ steps.resolve-git.outputs.target_commit }}
+          TARGET_SUBJECT: ${{ steps.resolve-git.outputs.target_subject }}
